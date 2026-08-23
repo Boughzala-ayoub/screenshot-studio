@@ -6,9 +6,20 @@ const auto = document.getElementById("autostart") as HTMLInputElement;
 
 let current = "";
 
+// The chord drawn as keycaps, one per key in the combination.
+function showChord(chord: string) {
+  rec.replaceChildren(
+    ...chord.split("+").map((k) => {
+      const cap = document.createElement("kbd");
+      cap.textContent = k;
+      return cap;
+    }),
+  );
+}
+
 invoke<{ hotkey: string; autostart: boolean }>("get_settings").then((s) => {
   current = s.hotkey;
-  rec.textContent = current;
+  showChord(current);
   auto.checked = s.autostart;
 });
 
@@ -44,7 +55,7 @@ rec.addEventListener("focus", () => {
   rec.textContent = "press keys…";
 });
 rec.addEventListener("blur", () => {
-  rec.textContent = current;
+  showChord(current);
 });
 
 // Applied the moment a valid chord lands: registered, persisted, tray updated.
@@ -57,7 +68,7 @@ rec.addEventListener("keydown", (e) => {
   }
   const combo = fromEvent(e);
   if (!combo) return;
-  rec.textContent = combo;
+  showChord(combo);
   invoke("set_hotkey", { hotkey: combo })
     .then(() => {
       current = combo;
@@ -65,7 +76,7 @@ rec.addEventListener("keydown", (e) => {
       rec.blur();
     })
     .catch((err) => {
-      rec.textContent = current;
+      showChord(current);
       flash(String(err), true);
     });
 });

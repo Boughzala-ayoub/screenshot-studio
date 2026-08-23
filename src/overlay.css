@@ -1,3 +1,13 @@
+:root {
+  --text: #ede9e1;
+  --amber: #e6a54c;
+  --amber-soft: rgba(240, 184, 108, 0.65);
+  --glass: rgba(19, 17, 21, 0.9);
+  --glass-line: rgba(255, 244, 225, 0.14);
+  --shade: rgba(14, 12, 16, 0.44);
+  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+}
+
 html,
 body {
   margin: 0;
@@ -11,8 +21,8 @@ body {
   background: #000;
   cursor: none;
   user-select: none;
-  font: 600 12px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color: #f2f4f8;
+  font: 600 12px/1 var(--mono);
+  color: var(--text);
 }
 
 #frozen {
@@ -27,17 +37,18 @@ body {
 #dim {
   position: fixed;
   inset: 0;
-  background: rgba(10, 12, 18, 0.42);
+  background: var(--shade);
 }
 
 #sel {
   position: fixed;
   outline: 1px solid rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 0 100vmax rgba(10, 12, 18, 0.42);
+  box-shadow: 0 0 0 100vmax var(--shade);
 }
 
-/* Corner ticks on the selection. Drawn on the overlay, so they are never part
-   of the crop: the shot comes from the frozen frame, not from this window. */
+/* Amber crop marks on the selection's corners. Drawn on the overlay, so they
+   are never part of the crop: the shot comes from the frozen frame, not from
+   this window. */
 #sel::before,
 #sel::after,
 #sel > i,
@@ -46,7 +57,7 @@ body {
   position: absolute;
   width: 11px;
   height: 11px;
-  border: 0 solid rgba(255, 255, 255, 0.95);
+  border: 0 solid var(--amber);
   pointer-events: none;
 }
 #sel::before {
@@ -79,7 +90,7 @@ body {
 #vline,
 #hline {
   position: fixed;
-  background: rgba(120, 190, 255, 0.55);
+  background: var(--amber-soft);
   pointer-events: none;
 }
 #vline {
@@ -94,13 +105,14 @@ body {
 }
 
 /* The frozen frame magnified around the cursor, so an edge can be hit exactly.
-   Its background is set from overlay.ts, which owns the zoom arithmetic. */
+   A rounded square, not a lens: it frames, like everything else here. Its
+   background is set from overlay.ts, which owns the zoom arithmetic. */
 #loupe {
   position: fixed;
   width: 132px;
   height: 132px;
-  border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 16px;
+  border: 1px solid rgba(255, 244, 225, 0.45);
   box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
   background-repeat: no-repeat;
   image-rendering: pixelated;
@@ -111,7 +123,7 @@ body {
 #loupe i,
 #loupe b {
   position: absolute;
-  background: rgba(120, 190, 255, 0.85);
+  background: rgba(230, 165, 76, 0.85);
 }
 #loupe i {
   left: 50%;
@@ -140,7 +152,7 @@ body {
   gap: 5px;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(16, 19, 28, 0.9);
+  background: var(--glass);
   font-style: normal;
   font-size: 10px;
   letter-spacing: 0.05em;
@@ -149,7 +161,7 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.45);
+  border: 1px solid rgba(255, 244, 225, 0.45);
   text-decoration: none;
 }
 
@@ -157,8 +169,8 @@ body {
   position: fixed;
   padding: 5px 9px;
   border-radius: 6px;
-  background: rgba(16, 19, 28, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
   letter-spacing: 0.03em;
   pointer-events: none;
@@ -169,13 +181,29 @@ body {
   left: 50%;
   bottom: 48px;
   transform: translateX(-50%);
-  padding: 9px 16px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 16px;
   border-radius: 999px;
-  background: rgba(16, 19, 28, 0.86);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  letter-spacing: 0.04em;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  font: 400 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: rgba(237, 233, 225, 0.85);
+  letter-spacing: 0.02em;
   pointer-events: none;
   transition: opacity 0.15s;
+}
+#hint kbd {
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(255, 244, 225, 0.1);
+  border: 1px solid rgba(255, 244, 225, 0.16);
+  font: 500 10.5px var(--mono);
+  color: var(--text);
+}
+#hint .dot {
+  color: rgba(237, 233, 225, 0.35);
 }
 
 [hidden] {

@@ -82,7 +82,7 @@ const STUB = `window.__TAURI_INTERNALS__ = {
     (window.__calls ||= []).push({ cmd, args });
     if (cmd === "get_settings")
       return Promise.resolve({ hotkey: "Ctrl+Shift+4", autostart: true });
-    if (cmd === "recent_shots") return Promise.resolve([]);
+    if (cmd === "recent_shots") return Promise.resolve(["a.png"]);
     // Like the real backend: one generation per "press", then park for ever.
     // Resolving every call spins the overlay's capture loop, and its reset()
     // lands mid-drag and nulls the selection under the test's cursor.
@@ -90,7 +90,8 @@ const STUB = `window.__TAURI_INTERNALS__ = {
       window.__gen = (window.__gen || 0) + 1;
       return window.__gen > 1 ? new Promise(() => {}) : Promise.resolve(1);
     }
-    if (cmd !== "frozen_frame") return Promise.resolve(new ArrayBuffer(0));
+    if (cmd !== "frozen_frame" && cmd !== "shot_png")
+      return Promise.resolve(new ArrayBuffer(0));
     // The real backend hands over a BMP these days, but a PNG stand-in still
     // decodes fine: <img> sniffs the bytes, not the blob's declared type.
     // A stand-in desktop, so SHOT screenshots show the dimming against real
@@ -283,6 +284,56 @@ async function main() {
       fail(`${page} at ${width}px overflows: doc ${dsw}/${dcw}, body ${bsw}/${bcw}`);
     else pass(`${page} at ${width}px: no horizontal overflow`);
   }
+
+  // --- on the pin, a double right-click closes and a drag drags out -----
+  // A left click stays inert, a drag past the 6px threshold hands the file
+  // to drag_shot, and two right-clicks inside 400ms dismiss the pin.
+  const pinShown = async () => {
+    await waitFor("pin image", () =>
+      read("(window.__calls||[]).some(c => c.cmd === 'fit_pin')"));
+  };
+  const rightClick = async (x, y) => {
+    await s("Input.dispatchMouseEvent", {
+      type: "mousePressed", x, y, button: "right", buttons: 2, clickCount: 1,
+    });
+    await s("Input.dispatchMouseEvent", {
+      type: "mouseReleased", x, y, button: "right", buttons: 0, clickCount: 1,
+    });
+  };
+  await s("Emulation.setDeviceMetricsOverride", {
+    width: 420, height: 320, deviceScaleFactor: 1, mobile: false,
+  });
+  const loadedClick = cdp.event("Page.loadEventFired");
+  await s("Page.navigate", { url: `${ORIGIN}/preview.html` });
+  await loadedClick;
+  await pinShown();
+  await drag([[210, 180]]);
+  await rightClick(210, 180);
+  await sleep(50);
+  let pinCmds = await read("JSON.stringify((window.__calls||[]).map(c=>c.cmd))").then(JSON.parse);
+  if (pinCmds.includes("close_preview") || pinCmds.includes("drag_shot"))
+    fail(`a left or single right click on the pin sent ${JSON.stringify(pinCmds)}`);
+  else pass("a single click on the pin, either button, stays inert");
+  // A fresh back-to-back pair, so the check never depends on how long the
+  // reads above took relative to the 400ms double-click window.
+  await rightClick(210, 180);
+  await rightClick(210, 180);
+  await sleep(50);
+  pinCmds = await read("JSON.stringify((window.__calls||[]).map(c=>c.cmd))").then(JSON.parse);
+  if (!pinCmds.includes("close_preview"))
+    fail(`a double right-click on the pin sent ${JSON.stringify(pinCmds)}`);
+  else pass("a double right-click on the pin closes it");
+
+  const loadedDrag = cdp.event("Page.loadEventFired");
+  await s("Page.navigate", { url: `${ORIGIN}/preview.html` });
+  await loadedDrag;
+  await pinShown();
+  await drag([[100, 150], [160, 200], [220, 250]]);
+  await sleep(50);
+  pinCmds = await read("JSON.stringify((window.__calls||[]).map(c=>c.cmd))").then(JSON.parse);
+  if (!pinCmds.includes("drag_shot") || pinCmds.includes("close_preview"))
+    fail(`a drag on the pin sent ${JSON.stringify(pinCmds)}`);
+  else pass("a drag on the pin drags the file out, not a close");
 
   ws.close();
 }

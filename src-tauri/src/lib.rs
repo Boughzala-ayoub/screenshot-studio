@@ -31,7 +31,7 @@ const TRAY: &str = "main";
 const PREVIEW_MAX: f64 = 420.0;
 /// Height of the pin's title bar, in logical pixels. Kept in step with
 /// preview.css, which reserves the same strip.
-const PREVIEW_BAR: f64 = 28.0;
+const PREVIEW_BAR: f64 = 32.0;
 /// How many shots survive in the folder. Older ones are deleted after each
 /// capture, so the folder never grows without asking.
 const KEEP_SHOTS: usize = 5;

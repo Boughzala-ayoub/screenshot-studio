@@ -99,6 +99,16 @@ addEventListener("pointermove", (e) => {
 
 addEventListener("pointerup", () => (armed = null));
 
+// Two right-clicks in quick succession dismiss the pin. A single one only
+// swallows the webview's context menu, so a stray right-click costs nothing.
+let lastRight = -Infinity; // 0 would pair with a right-click in the page's first 400ms
+addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const now = performance.now();
+  if (now - lastRight < 400) invoke("close_preview");
+  lastRight = now;
+});
+
 older.addEventListener("click", () => step(1));
 newer.addEventListener("click", () => step(-1));
 

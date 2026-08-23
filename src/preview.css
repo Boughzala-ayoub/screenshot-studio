@@ -1,9 +1,19 @@
+:root {
+  --ink: #141216;
+  --raised: #1f1c21;
+  --line: rgba(255, 244, 225, 0.09);
+  --text: #ede9e1;
+  --muted: #8e887c;
+  --amber: #e6a54c;
+  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+}
+
 html,
 body {
   margin: 0;
   height: 100%;
   overflow: hidden;
-  background: #0b0d13;
+  background: var(--ink);
 }
 
 /* A short settle as the window shows: preview.ts adds .in right before it asks
@@ -22,44 +32,51 @@ body.in {
     transform: none;
   }
 }
+@media (prefers-reduced-motion: reduce) {
+  body.in {
+    animation: none;
+  }
+}
 
 body {
   display: flex;
   flex-direction: column;
   user-select: none;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  border-radius: 8px;
+  border: 1px solid rgba(255, 244, 225, 0.16);
+  border-radius: 10px;
   box-sizing: border-box;
-  font: 500 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
-  color: #aeb6c4;
+  font: 500 11px/1 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--muted);
 }
 
 /* The two drags need separate targets: this bar moves the window, the image
    drags the file out. Anywhere else and one would swallow the other. Its height
    matches PREVIEW_BAR in lib.rs, which reserves the space. */
 header {
-  flex: 0 0 28px;
+  flex: 0 0 32px;
   display: flex;
   align-items: center;
   gap: 1px;
   padding: 0 4px 0 3px;
   cursor: grab;
-  background: #151926;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-  border-radius: 7px 7px 0 0;
+  background: linear-gradient(var(--raised), #1a181d);
+  border-bottom: 1px solid var(--line);
+  border-radius: 9px 9px 0 0;
 }
 
 #count {
-  min-width: 26px;
+  min-width: 24px;
   text-align: center;
-  letter-spacing: 0.04em;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.05em;
 }
 
 #dims {
   flex: 1 1 auto;
   min-width: 0;
   padding-left: 6px;
-  letter-spacing: 0.04em;
+  font: 500 10.5px var(--mono);
+  letter-spacing: 0.05em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -67,7 +84,14 @@ header {
 
 /* The dims slot while it is showing a confirmation rather than a size. */
 #dims.flash {
-  color: #7fd6a0;
+  color: var(--amber);
+}
+
+.sep {
+  flex: 0 0 1px;
+  height: 14px;
+  margin: 0 2px;
+  background: var(--line);
 }
 
 button {
@@ -75,31 +99,36 @@ button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  height: 20px;
+  width: 25px;
+  height: 23px;
   padding: 0;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
-  color: #aeb6c4;
+  color: var(--muted);
   font: inherit;
   cursor: pointer;
   transition: background 0.1s, color 0.1s;
 }
 
 button svg {
-  width: 13px;
-  height: 13px;
+  width: 14px;
+  height: 14px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 1.8;
   stroke-linecap: round;
   stroke-linejoin: round;
 }
 
 button:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.1);
-  color: #f2f4f8;
+  background: rgba(230, 165, 76, 0.14);
+  color: var(--text);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(230, 165, 76, 0.5);
 }
 
 button:disabled {
@@ -108,7 +137,7 @@ button:disabled {
 }
 
 #close:hover {
-  background: #c0392b;
+  background: #c42b1c;
   color: #fff;
 }
 
@@ -118,5 +147,5 @@ button:disabled {
   width: 100%;
   object-fit: contain;
   cursor: grab;
-  border-radius: 0 0 7px 7px;
+  border-radius: 0 0 9px 9px;
 }
