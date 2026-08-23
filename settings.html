@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Settings</title>
+    <link rel="stylesheet" href="/src/settings.css" />
+  </head>
+  <body>
+    <main>
+      <section>
+        <h1>Capture shortcut</h1>
+        <div id="recorder" tabindex="0" title="Click, then press the new shortcut">…</div>
+        <p class="hint">
+          Click the box, then press the combination: Ctrl, Alt or Shift plus a
+          letter, digit or F&#8209;key. Esc keeps the current one.
+        </p>
+        <p id="status"></p>
+      </section>
+      <section class="row">
+        <div>
+          <h1>Start with Windows</h1>
+          <p class="hint">
+            Warms up the capture engine at login, so the first shot of the day
+            is instant.
+          </p>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="autostart" />
+          <i></i>
+        </label>
+      </section>
+    </main>
+    <script type="module" src="/src/settings.ts"></script>
+  </body>
+</html>

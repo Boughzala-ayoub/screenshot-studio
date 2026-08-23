@@ -1,0 +1,183 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  /* A scrollbar here would shift every clientX by its width and crop the wrong
+     pixels. verify-overlay.mjs asserts there is never one. */
+  overflow: hidden;
+}
+
+body {
+  background: #000;
+  cursor: none;
+  user-select: none;
+  font: 600 12px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #f2f4f8;
+}
+
+#frozen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* Before the first drag the whole screen is dimmed. During a drag the shadow on
+   #sel does the dimming instead, so the selection reads as a hole punched in it. */
+#dim {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 12, 18, 0.42);
+}
+
+#sel {
+  position: fixed;
+  outline: 1px solid rgba(255, 255, 255, 0.92);
+  box-shadow: 0 0 0 100vmax rgba(10, 12, 18, 0.42);
+}
+
+/* Corner ticks on the selection. Drawn on the overlay, so they are never part
+   of the crop: the shot comes from the frozen frame, not from this window. */
+#sel::before,
+#sel::after,
+#sel > i,
+#sel > b {
+  content: "";
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border: 0 solid rgba(255, 255, 255, 0.95);
+  pointer-events: none;
+}
+#sel::before {
+  left: -2px;
+  top: -2px;
+  border-left-width: 2px;
+  border-top-width: 2px;
+}
+#sel::after {
+  right: -2px;
+  bottom: -2px;
+  border-right-width: 2px;
+  border-bottom-width: 2px;
+}
+#sel > i {
+  right: -2px;
+  top: -2px;
+  border-right-width: 2px;
+  border-top-width: 2px;
+}
+#sel > b {
+  left: -2px;
+  bottom: -2px;
+  border-left-width: 2px;
+  border-bottom-width: 2px;
+}
+
+/* Full-height and full-width guides. The cursor is hidden, so these are what
+   tells you where the next click lands. */
+#vline,
+#hline {
+  position: fixed;
+  background: rgba(120, 190, 255, 0.55);
+  pointer-events: none;
+}
+#vline {
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+#hline {
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+/* The frozen frame magnified around the cursor, so an edge can be hit exactly.
+   Its background is set from overlay.ts, which owns the zoom arithmetic. */
+#loupe {
+  position: fixed;
+  width: 132px;
+  height: 132px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  pointer-events: none;
+  overflow: hidden;
+}
+/* Crosshair inside the loupe, one magnified pixel wide. */
+#loupe i,
+#loupe b {
+  position: absolute;
+  background: rgba(120, 190, 255, 0.85);
+}
+#loupe i {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  margin-left: -4px;
+}
+#loupe b {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 8px;
+  margin-top: -4px;
+}
+
+/* The color under the cursor, named. Handy for anyone screenshotting UI, and
+   free: the loupe is already looking at that exact pixel. */
+#pix {
+  position: absolute;
+  left: 50%;
+  bottom: 12px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(16, 19, 28, 0.9);
+  font-style: normal;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+#pix s {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  text-decoration: none;
+}
+
+#hud {
+  position: fixed;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: rgba(16, 19, 28, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  letter-spacing: 0.03em;
+  pointer-events: none;
+}
+
+#hint {
+  position: fixed;
+  left: 50%;
+  bottom: 48px;
+  transform: translateX(-50%);
+  padding: 9px 16px;
+  border-radius: 999px;
+  background: rgba(16, 19, 28, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+[hidden] {
+  display: none !important;
+}

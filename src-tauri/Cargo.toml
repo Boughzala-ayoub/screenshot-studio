@@ -1,0 +1,63 @@
+[package]
+name = "screenshot-studio"
+version = "0.1.0"
+description = "Region capture with polish, for Windows"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+# The `_lib` suffix keeps the lib name from colliding with the bin name on
+# Windows. See https://github.com/rust-lang/cargo/issues/8519
+name = "screenshot_studio_lib"
+# rlib only: main.rs links this crate, nothing else does. The template's
+# staticlib/cdylib are for iOS/Android and archive every dependency's object
+# code into a multi-GB artifact nothing consumes.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+# Line tables keep panic backtraces pointing at file:line without the
+# double-digit-GB target\debug that full debuginfo produces.
+[profile.dev]
+debug = "line-tables-only"
+
+# Thin LTO, and not one codegen unit: the windows crate brings a mountain of
+# generated code, and fat LTO over it turned a two-minute build into twenty-five.
+[profile.release]
+lto = "thin"
+opt-level = "s"
+panic = "abort"
+strip = true
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+# Already in the tree via tauri; named here for config.json.
+serde_json = "1"
+xcap = "0.9"
+# Already in the tree via tauri; named here only for the watch channel the
+# overlay's frame pull rides on.
+tokio = { version = "1", features = ["sync"] }
+image = "0.25"
+arboard = "3.6"
+
+# Only for dragout.rs, which builds the OLE drop payload by hand so it can offer
+# the file and the path at once. 0.52 because that is the API the reference
+# implementations are written against.
+[target.'cfg(target_os = "windows")'.dependencies.windows]
+version = "0.52"
+features = [
+    "implement",
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_SystemServices",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+]

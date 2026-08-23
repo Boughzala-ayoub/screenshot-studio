@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Select a region</title>
+    <link rel="stylesheet" href="/src/overlay.css" />
+  </head>
+  <body>
+    <img id="frozen" alt="" draggable="false" />
+    <div id="dim"></div>
+    <div id="sel" hidden><i></i><b></b></div>
+    <div id="vline" hidden></div>
+    <div id="hline" hidden></div>
+    <div id="loupe" hidden>
+      <i></i><b></b>
+      <em id="pix"><s id="pixdot"></s><span id="pixtxt"></span></em>
+    </div>
+    <div id="hud" hidden></div>
+    <div id="hint">drag to select &nbsp;·&nbsp; Space moves it, arrows nudge &nbsp;·&nbsp; Esc cancels</div>
+    <script type="module" src="/src/overlay.ts"></script>
+  </body>
+</html>

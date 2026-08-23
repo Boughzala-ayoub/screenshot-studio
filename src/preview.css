@@ -1,0 +1,122 @@
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0b0d13;
+}
+
+/* A short settle as the window shows: preview.ts adds .in right before it asks
+   Rust to show the window, so the animation is on screen rather than spent
+   while the window is still hidden. */
+body.in {
+  animation: settle 0.18s ease-out;
+}
+@keyframes settle {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  user-select: none;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 8px;
+  box-sizing: border-box;
+  font: 500 11px/1 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color: #aeb6c4;
+}
+
+/* The two drags need separate targets: this bar moves the window, the image
+   drags the file out. Anywhere else and one would swallow the other. Its height
+   matches PREVIEW_BAR in lib.rs, which reserves the space. */
+header {
+  flex: 0 0 28px;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 0 4px 0 3px;
+  cursor: grab;
+  background: #151926;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 7px 7px 0 0;
+}
+
+#count {
+  min-width: 26px;
+  text-align: center;
+  letter-spacing: 0.04em;
+}
+
+#dims {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 6px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* The dims slot while it is showing a confirmation rather than a size. */
+#dims.flash {
+  color: #7fd6a0;
+}
+
+button {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #aeb6c4;
+  font: inherit;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+
+button svg {
+  width: 13px;
+  height: 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+  color: #f2f4f8;
+}
+
+button:disabled {
+  opacity: 0.28;
+  cursor: default;
+}
+
+#close:hover {
+  background: #c0392b;
+  color: #fff;
+}
+
+#shot {
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  object-fit: contain;
+  cursor: grab;
+  border-radius: 0 0 7px 7px;
+}

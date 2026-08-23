@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Pinned</title>
+    <link rel="stylesheet" href="/src/preview.css" />
+  </head>
+  <body>
+    <header data-tauri-drag-region title="Drag to move">
+      <button id="older" title="Older shot (Left)">
+        <svg viewBox="0 0 24 24"><path d="M14 6l-6 6 6 6" /></svg>
+      </button>
+      <span id="count">-</span>
+      <button id="newer" title="Newer shot (Right)">
+        <svg viewBox="0 0 24 24"><path d="M10 6l6 6-6 6" /></svg>
+      </button>
+      <span id="dims" data-tauri-drag-region></span>
+      <button id="new" title="New shot (N)">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+      </button>
+      <button id="copy" title="Copy image to clipboard (C)">
+        <svg viewBox="0 0 24 24">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15V5a2 2 0 0 1 2-2h10" />
+        </svg>
+      </button>
+      <button id="path" title="Copy the file path">
+        <svg viewBox="0 0 24 24">
+          <path d="M9.5 14.5l5-5" />
+          <path d="M11 7l1.5-1.5a3.5 3.5 0 0 1 5 5L16 12" />
+          <path d="M13 17l-1.5 1.5a3.5 3.5 0 0 1-5-5L8 12" />
+        </svg>
+      </button>
+      <button id="open" title="Open the shots folder">
+        <svg viewBox="0 0 24 24">
+          <path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+      </button>
+      <button id="close" title="Close (Esc)">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
+      </button>
+    </header>
+    <img id="shot" alt="" draggable="false" title="Drag into another app" />
+    <script type="module" src="/src/preview.ts"></script>
+  </body>
+</html>
