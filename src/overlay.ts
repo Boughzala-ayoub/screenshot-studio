@@ -10,6 +10,7 @@ const hline = document.getElementById("hline") as HTMLDivElement;
 const loupe = document.getElementById("loupe") as HTMLDivElement;
 const pixdot = document.getElementById("pixdot") as HTMLElement;
 const pixtxt = document.getElementById("pixtxt") as HTMLElement;
+const frame = document.getElementById("frame") as HTMLDivElement;
 
 const ZOOM = 8;
 const LOUPE = 132; // keep in step with #loupe in overlay.css
@@ -33,9 +34,29 @@ function reset() {
   moving = false;
   dim.hidden = false;
   hint.hidden = false;
-  sel.hidden = hud.hidden = true;
+  sel.hidden = hud.hidden = frame.hidden = true;
   vline.hidden = hline.hidden = loupe.hidden = true;
+  document.body.classList.remove("live");
 }
+
+// While a recording runs the overlay stays up, see-through and click-through,
+// as nothing but a frame drawn just outside the region so it never lands in
+// the video. Rust calls these two around the recording.
+Object.assign(window, {
+  recFrame(x: number, y: number, w: number, h: number) {
+    sel.hidden = hud.hidden = hint.hidden = true;
+    vline.hidden = hline.hidden = loupe.hidden = true;
+    frame.hidden = false;
+    frame.style.left = `${x}px`;
+    frame.style.top = `${y}px`;
+    frame.style.width = `${w}px`;
+    frame.style.height = `${h}px`;
+    document.body.classList.add("live");
+  },
+  recDone() {
+    reset();
+  },
+});
 
 // The capture loop. The backend completes await_frame once per hotkey press,
 // however long after the press this page finally woke up; nothing is pushed at
@@ -45,12 +66,15 @@ function reset() {
 let url = "";
 async function captures() {
   for (let gen = 0; ; ) {
-    gen = await invoke<number>("await_frame", { seen: gen });
+    const info = await invoke<{ gen: number; video: boolean }>("await_frame", { seen: gen });
+    gen = info.gen;
     try {
       const bmp = await invoke<ArrayBuffer>("frozen_frame");
       if (url) URL.revokeObjectURL(url);
       url = URL.createObjectURL(new Blob([bmp], { type: "image/bmp" }));
       reset();
+      // The badge and the hint say which of the two the drag will do.
+      document.body.classList.toggle("video", info.video);
       frozen.src = url;
       loupe.style.backgroundImage = `url(${url})`;
       await frozen.decode().catch(() => {}); // a broken frame beats a dead hotkey

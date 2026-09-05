@@ -1,0 +1,26 @@
+:root {
+  color-scheme: dark;
+  --ink: #15171d;
+  --raised: #20232c;
+  --well: #101217;
+  --line: #303440;
+  --text: #eef0f6;
+  --muted: #a0a7b8;
+  --accent: #a5b4fc;
+  --accent-soft: #2c334c;
+  --rec: #f27683;
+  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+button, input { font: inherit; }
+button:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}

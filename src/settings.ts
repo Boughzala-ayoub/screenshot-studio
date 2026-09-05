@@ -1,13 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 
-const rec = document.getElementById("recorder") as HTMLDivElement;
 const status = document.getElementById("status") as HTMLParagraphElement;
 const auto = document.getElementById("autostart") as HTMLInputElement;
 
-let current = "";
-
 // The chord drawn as keycaps, one per key in the combination.
-function showChord(chord: string) {
+function showChord(rec: HTMLElement, chord: string) {
   rec.replaceChildren(
     ...chord.split("+").map((k) => {
       const cap = document.createElement("kbd");
@@ -16,12 +13,6 @@ function showChord(chord: string) {
     }),
   );
 }
-
-invoke<{ hotkey: string; autostart: boolean }>("get_settings").then((s) => {
-  current = s.hotkey;
-  showChord(current);
-  auto.checked = s.autostart;
-});
 
 let statusTimer: ReturnType<typeof setTimeout> | undefined;
 function flash(msg: string, err = false) {
@@ -51,34 +42,45 @@ function fromEvent(e: KeyboardEvent): string | null {
   return [...mods, key].join("+");
 }
 
-rec.addEventListener("focus", () => {
-  rec.textContent = "press keys…";
-});
-rec.addEventListener("blur", () => {
-  showChord(current);
-});
-
-// Applied the moment a valid chord lands: registered, persisted, tray updated.
-// No save button to forget.
-rec.addEventListener("keydown", (e) => {
-  e.preventDefault();
-  if (e.key === "Escape") {
-    rec.blur();
-    return;
-  }
-  const combo = fromEvent(e);
-  if (!combo) return;
-  showChord(combo);
-  invoke("set_hotkey", { hotkey: combo })
-    .then(() => {
-      current = combo;
-      flash("saved");
+// One recorder box per shortcut. Applied the moment a valid chord lands:
+// registered, persisted, tray updated. No save button to forget.
+function recorder(id: string, record: boolean, initial: string) {
+  const rec = document.getElementById(id) as HTMLDivElement;
+  let current = initial;
+  showChord(rec, current);
+  rec.addEventListener("focus", () => {
+    rec.textContent = "press keys…";
+  });
+  rec.addEventListener("blur", () => {
+    showChord(rec, current);
+  });
+  rec.addEventListener("keydown", (e) => {
+    if (e.key === "Tab") return;
+    e.preventDefault();
+    if (e.key === "Escape") {
       rec.blur();
-    })
-    .catch((err) => {
-      showChord(current);
-      flash(String(err), true);
-    });
+      return;
+    }
+    const combo = fromEvent(e);
+    if (!combo) return;
+    showChord(rec, combo);
+    invoke("set_hotkey", { hotkey: combo, record })
+      .then(() => {
+        current = combo;
+        flash("saved");
+        rec.blur();
+      })
+      .catch((err) => {
+        showChord(rec, current);
+        flash(String(err), true);
+      });
+  });
+}
+
+invoke<{ hotkey: string; record_hotkey: string; autostart: boolean }>("get_settings").then((s) => {
+  recorder("recorder", false, s.hotkey);
+  recorder("recorder-video", true, s.record_hotkey);
+  auto.checked = s.autostart;
 });
 
 auto.addEventListener("change", () => {

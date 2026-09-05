@@ -18,102 +18,8 @@ param(
 # skips, which reads as a pass. It is not one.
 $ErrorActionPreference = 'Stop'
 
-Add-Type -AssemblyName System.Windows.Forms, System.Drawing
-Add-Type -Name Input -Namespace W32 -MemberDefinition @'
-[StructLayout(LayoutKind.Sequential)] public struct POINT { public int X; public int Y; }
-[StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-public delegate bool EnumProc(System.IntPtr h, System.IntPtr l);
-[DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
-[DllImport("user32.dll")] public static extern bool GetCursorPos(out POINT p);
-[DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, System.IntPtr extra);
-[DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, System.IntPtr extra);
-[DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, System.IntPtr l);
-[DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(System.IntPtr h, out uint pid);
-[DllImport("user32.dll")] public static extern bool IsWindowVisible(System.IntPtr h);
-[DllImport("user32.dll")] public static extern bool GetWindowRect(System.IntPtr h, out RECT r);
-[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowTextW(System.IntPtr h, System.Text.StringBuilder s, int n);
-[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetClassNameW(System.IntPtr h, System.Text.StringBuilder s, int n);
-[DllImport("user32.dll")] public static extern bool MoveWindow(System.IntPtr h, int x, int y, int w, int t, bool repaint);
-[DllImport("user32.dll")] public static extern bool PostMessageW(System.IntPtr h, uint msg, System.IntPtr wp, System.IntPtr lp);
-'@
-
-$LEFTDOWN = 0x0002; $LEFTUP = 0x0004; $KEYUP = 0x0002
-$VK_CTRL = 0x11; $VK_SHIFT = 0x10; $VK_4 = 0x34
-$OutDir = "$env:USERPROFILE\Pictures\Screenshot Studio"
-
-$fails = 0
-function Check($ok, $msg) {
-    if ($ok) { "ok    $msg" } else { $script:fails++; Write-Host "FAIL  $msg" -ForegroundColor Red }
-}
-
-# The app's visible top-level windows, with position. WebView2 draws through
-# DirectComposition, which a GDI screen grab does not see, so window titles are
-# the reliable way to tell whether the overlay and the preview are really up.
-function Get-AppWindows([int]$ProcId) {
-    $seen = New-Object Collections.ArrayList
-    $cb = [W32.Input+EnumProc] {
-        param($h, $l)
-        $p = 0
-        [void][W32.Input]::GetWindowThreadProcessId($h, [ref]$p)
-        if ($p -eq $ProcId -and [W32.Input]::IsWindowVisible($h)) {
-            $sb = New-Object Text.StringBuilder 256
-            [void][W32.Input]::GetWindowTextW($h, $sb, 256)
-            if ($sb.Length) {
-                $r = New-Object W32.Input+RECT
-                [void][W32.Input]::GetWindowRect($h, [ref]$r)
-                [void]$seen.Add([pscustomobject]@{ H = $h; Title = $sb.ToString(); X = $r.L; Y = $r.T })
-            }
-        }
-        return $true
-    }
-    [void][W32.Input]::EnumWindows($cb, [IntPtr]::Zero)
-    return $seen
-}
-
-# Any top-level window of a given class, whoever owns it. Used to find the
-# Explorer folder that the pin gets dropped onto.
-function Get-WindowsOfClass([string]$Class) {
-    $seen = New-Object Collections.ArrayList
-    $cb = [W32.Input+EnumProc] {
-        param($h, $l)
-        if ([W32.Input]::IsWindowVisible($h)) {
-            $c = New-Object Text.StringBuilder 256
-            [void][W32.Input]::GetClassNameW($h, $c, 256)
-            if ($c.ToString() -eq $Class) {
-                $t = New-Object Text.StringBuilder 256
-                [void][W32.Input]::GetWindowTextW($h, $t, 256)
-                [void]$seen.Add([pscustomobject]@{ H = $h; Title = $t.ToString() })
-            }
-        }
-        return $true
-    }
-    [void][W32.Input]::EnumWindows($cb, [IntPtr]::Zero)
-    return $seen
-}
-
-# DoDragDrop only tracks movement it actually sees, so creep towards the target.
-function Invoke-Drag([int]$FromX, [int]$FromY, [int]$ToX, [int]$ToY, [int]$Steps = 12) {
-    [void][W32.Input]::SetCursorPos($FromX, $FromY); Start-Sleep -Milliseconds 300
-    [W32.Input]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 250
-    foreach ($i in 1..$Steps) {
-        [void][W32.Input]::SetCursorPos(
-            [int]($FromX + ($ToX - $FromX) * $i / $Steps),
-            [int]($FromY + ($ToY - $FromY) * $i / $Steps))
-        Start-Sleep -Milliseconds 70
-    }
-    Start-Sleep -Milliseconds 400
-    [W32.Input]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 800
-}
-
-function Wait-Window([int]$ProcId, [string]$Like, [int]$Tries = 120) {
-    foreach ($i in 1..$Tries) {
-        $w = @(Get-AppWindows $ProcId)
-        if (@($w | Where-Object Title -like $Like).Count) { return $w }
-        Start-Sleep -Milliseconds 250
-    }
-    return @(Get-AppWindows $ProcId)
-}
+# Win32 helpers shared with verify-video.ps1.
+. "$PSScriptRoot\verify-lib.ps1"
 
 if (-not (Test-Path $Exe)) { throw "no exe at $Exe. Run: npm run tauri build -- --debug --no-bundle" }
 
@@ -133,14 +39,9 @@ try {
     Start-Sleep -Seconds 5   # tray icon + RegisterHotKey
 
     # Virtual key codes, not SendKeys: on an AZERTY layout SendKeys('4') injects
-    # its own Shift and the combination stops being reproducible.
-    [W32.Input]::keybd_event($VK_CTRL, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_4, 0, 0, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 60
-    [W32.Input]::keybd_event($VK_4, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_CTRL, 0, $KEYUP, [IntPtr]::Zero)
+    # its own Shift and the combination stops being reproducible. The chord is
+    # whatever config.json says, since the app registers that one, not the default.
+    Press-Chord (Get-Chord 'hotkey')
 
     # The overlay only becomes visible once its page can take a pointer event, so
     # waiting for it is also the wait for "safe to drag".
@@ -261,13 +162,7 @@ try {
     if ($pin.Count -ne 1) { throw "no pin to work with; see the failures above" }
     $shape1 = & $sizeOf $pin[0]
 
-    [W32.Input]::keybd_event($VK_CTRL, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_4, 0, 0, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 60
-    [W32.Input]::keybd_event($VK_4, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_CTRL, 0, $KEYUP, [IntPtr]::Zero)
+    Press-Chord (Get-Chord 'hotkey')
     [void](Wait-Window $app.Id '*select a region*')
     # Deliberately a different shape from the first shot.
     [void][W32.Input]::SetCursorPos(200, 200); Start-Sleep -Milliseconds 300
@@ -349,13 +244,7 @@ $f.ShowInTaskbar = $false
     Start-Sleep -Seconds 2
     try {
         $mark = @(Get-ChildItem $OutDir -Filter *.png -EA 0 | Select-Object -Expand FullName)
-        [W32.Input]::keybd_event($VK_CTRL, 0, 0, [IntPtr]::Zero)
-        [W32.Input]::keybd_event($VK_SHIFT, 0, 0, [IntPtr]::Zero)
-        [W32.Input]::keybd_event($VK_4, 0, 0, [IntPtr]::Zero)
-        Start-Sleep -Milliseconds 60
-        [W32.Input]::keybd_event($VK_4, 0, $KEYUP, [IntPtr]::Zero)
-        [W32.Input]::keybd_event($VK_SHIFT, 0, $KEYUP, [IntPtr]::Zero)
-        [W32.Input]::keybd_event($VK_CTRL, 0, $KEYUP, [IntPtr]::Zero)
+        Press-Chord (Get-Chord 'hotkey')
         [void](Wait-Window $app.Id '*select a region*')
 
         [void][W32.Input]::SetCursorPos($cx, $cy); Start-Sleep -Milliseconds 300
@@ -446,13 +335,7 @@ $f.ShowInTaskbar = $false
     $keeper = Join-Path $OutDir "not-a-shot.txt"
     Set-Content -Path $keeper -Value 'left alone' -Encoding utf8
 
-    [W32.Input]::keybd_event($VK_CTRL, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, 0, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_4, 0, 0, [IntPtr]::Zero)
-    Start-Sleep -Milliseconds 60
-    [W32.Input]::keybd_event($VK_4, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_SHIFT, 0, $KEYUP, [IntPtr]::Zero)
-    [W32.Input]::keybd_event($VK_CTRL, 0, $KEYUP, [IntPtr]::Zero)
+    Press-Chord (Get-Chord 'hotkey')
     [void](Wait-Window $app.Id '*select a region*')
     [void][W32.Input]::SetCursorPos(300, 300); Start-Sleep -Milliseconds 300
     [W32.Input]::mouse_event($LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 250

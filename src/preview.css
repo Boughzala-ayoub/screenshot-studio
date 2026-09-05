@@ -1,12 +1,4 @@
-:root {
-  --ink: #141216;
-  --raised: #1f1c21;
-  --line: rgba(255, 244, 225, 0.09);
-  --text: #ede9e1;
-  --muted: #8e887c;
-  --amber: #e6a54c;
-  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
-}
+@import "./theme.css";
 
 html,
 body {
@@ -59,7 +51,7 @@ header {
   gap: 1px;
   padding: 0 4px 0 3px;
   cursor: grab;
-  background: linear-gradient(var(--raised), #1a181d);
+  background: var(--raised);
   border-bottom: 1px solid var(--line);
   border-radius: 9px 9px 0 0;
 }
@@ -84,7 +76,7 @@ header {
 
 /* The dims slot while it is showing a confirmation rather than a size. */
 #dims.flash {
-  color: var(--amber);
+  color: var(--accent);
 }
 
 .sep {
@@ -122,13 +114,13 @@ button svg {
 }
 
 button:hover:not(:disabled) {
-  background: rgba(230, 165, 76, 0.14);
+  background: var(--accent-soft);
   color: var(--text);
 }
 
 button:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(230, 165, 76, 0.5);
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 button:disabled {
@@ -141,11 +133,88 @@ button:disabled {
   color: #fff;
 }
 
-#shot {
+#shot,
+#clip {
   flex: 1 1 auto;
   min-height: 0;
   width: 100%;
   object-fit: contain;
   cursor: grab;
   border-radius: 0 0 9px 9px;
+  background: #000;
 }
+
+/* The stop bar. The header is gone, the whole window is this one strip, and
+   like the header it moves the window; only the button is a button. Its
+   size is REC_BAR in lib.rs. */
+body.rec header,
+body.rec #shot,
+body.rec #clip {
+  display: none;
+}
+body.rec {
+  border-color: rgba(224, 68, 62, 0.55);
+}
+#recbar {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 4px 0 12px;
+  cursor: grab;
+  background: var(--raised);
+  border-radius: 9px;
+  font: 500 12px var(--mono);
+  letter-spacing: 0.05em;
+  color: var(--text);
+}
+#recbar .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--rec);
+  box-shadow: 0 0 6px rgba(224, 68, 62, 0.7);
+  animation: blink 1.2s ease-in-out infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.3;
+  }
+}
+#clock {
+  flex: 1 1 auto;
+  font-variant-numeric: tabular-nums;
+}
+#stop {
+  width: 28px;
+  height: 26px;
+  color: var(--text);
+  background: rgba(224, 68, 62, 0.18);
+}
+#stop:hover:not(:disabled) {
+  background: var(--rec);
+  color: #fff;
+}
+#stop:disabled {
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  #recbar .dot {
+    animation: none;
+  }
+}
+
+[hidden] {
+  display: none !important;
+}
+
+#edit { background: var(--accent-soft); color: var(--accent); }
+#count { color: var(--text); }
+.more { position: relative; flex: none; }
+.more summary { display: flex; align-items: center; justify-content: center; width: 25px; height: 23px; border-radius: 6px; cursor: pointer; list-style: none; }
+.more summary::-webkit-details-marker { display: none; }
+.more summary:hover, .more[open] summary { background: var(--accent-soft); color: var(--text); }
+.more summary svg { width: 16px; height: 16px; fill: currentColor; }
+.more-actions { position: absolute; z-index: 2; top: 28px; right: 0; width: 184px; padding: 5px; border: 1px solid var(--line); border-radius: 9px; background: var(--raised); box-shadow: 0 8px 24px #0008; }
+.more-actions button { width: 100%; height: 27px; justify-content: flex-start; gap: 9px; padding: 0 8px; color: var(--text); }
+.more-actions button svg { flex: none; }

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Edit</title>
+    <link rel="stylesheet" href="/src/editor.css" />
+  </head>
+  <body>
+    <header>
+      <div class="editor-title"><strong>Annotate</strong><span>Screenshot Studio</span></div>
+      <div class="actions">
+        <button id="undo" title="Undo (Ctrl+Z)"><svg viewBox="0 0 24 24"><path d="M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3" /></svg></button>
+        <button id="redo" title="Redo (Ctrl+Shift+Z)"><svg viewBox="0 0 24 24"><path d="M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3" /></svg></button>
+        <i class="sep"></i>
+        <button id="copy" title="Copy to clipboard (Ctrl+C)"><svg viewBox="0 0 24 24"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg></button>
+        <button id="save" class="primary" title="Save over the shot and copy (Ctrl+S)">Save</button>
+        <button id="cancel" title="Discard (Esc)"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg></button>
+      </div>
+    </header>
+    <div class="toolbar" aria-label="Annotation tools">
+      <div class="group" id="tools">
+        <button data-tool="rect" title="Rectangle (R)">
+          <svg viewBox="0 0 24 24"><rect x="4" y="6" width="16" height="12" rx="1.5" /></svg>
+        </button>
+        <button data-tool="ellipse" title="Ellipse (E)">
+          <svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="8" ry="6" /></svg>
+        </button>
+        <button data-tool="arrow" title="Arrow (A)">
+          <svg viewBox="0 0 24 24"><path d="M5 19L19 5M10 5h9v9" /></svg>
+        </button>
+        <button data-tool="pen" title="Pen (P)">
+          <svg viewBox="0 0 24 24"><path d="M4 18c3-8 6-8 8-3s5 3 8-4" /></svg>
+        </button>
+        <button data-tool="highlight" title="Highlighter (H)">
+          <svg viewBox="0 0 24 24">
+            <path d="M6 19l3-3M8 14l7-7 3 3-7 7z" />
+            <path d="M4 20h6" />
+          </svg>
+        </button>
+        <button data-tool="text" title="Text (T)">
+          <svg viewBox="0 0 24 24"><path d="M6 6h12M12 6v13" /></svg>
+        </button>
+        <button data-tool="number" title="Numbered step (N)">
+          <svg viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="8" />
+            <path d="M10.5 9.5L12 8.5v7" />
+          </svg>
+        </button>
+        <button data-tool="pixelate" title="Pixelate (B)">
+          <svg viewBox="0 0 24 24">
+            <path d="M5 5h4v4H5zM9 9h4v4H9zM13 5h4v4h-4zM5 13h4v4H5zM13 13h4v4h-4zM9 17h4v2H9z" />
+          </svg>
+        </button>
+      </div>
+      <i class="sep"></i>
+      <div class="group" id="colors">
+        <button data-color="#e6a54c" style="--c: #e6a54c" title="Amber"></button>
+        <button data-color="#e0443e" style="--c: #e0443e" title="Red"></button>
+        <button data-color="#3b82f6" style="--c: #3b82f6" title="Blue"></button>
+        <button data-color="#22c55e" style="--c: #22c55e" title="Green"></button>
+        <button data-color="#ffffff" style="--c: #ffffff" title="White"></button>
+        <button data-color="#141216" style="--c: #141216" title="Black"></button>
+      </div>
+      <i class="sep"></i>
+      <div class="group" id="sizes">
+        <button data-size="2" title="Thin (1)"><i style="--d: 4px"></i></button>
+        <button data-size="4" title="Medium (2)"><i style="--d: 7px"></i></button>
+        <button data-size="8" title="Thick (3)"><i style="--d: 11px"></i></button>
+      </div>
+    </div>
+    <main id="stage">
+      <canvas id="canvas"></canvas>
+      <input id="textbox" type="text" aria-label="Annotation text" hidden spellcheck="false" autocomplete="off" />
+    </main>
+    <footer>
+      <span id="status" role="status">
+        <kbd>R</kbd> rect <kbd>E</kbd> ellipse <kbd>A</kbd> arrow <kbd>P</kbd> pen
+        <kbd>H</kbd> highlight <kbd>T</kbd> text <kbd>N</kbd> step <kbd>B</kbd> pixelate
+      </span>
+      <span id="dims"></span>
+    </footer>
+    <script type="module" src="/src/editor.ts"></script>
+  </body>
+</html>

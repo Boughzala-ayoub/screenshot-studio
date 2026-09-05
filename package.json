@@ -10,7 +10,8 @@
     "tauri": "tauri",
     "verify:overlay": "npm run build && node verify-overlay.mjs",
     "verify:capture": "powershell -NoProfile -ExecutionPolicy Bypass -File verify-capture.ps1",
-    "verify:coldstart": "powershell -NoProfile -ExecutionPolicy Bypass -File verify-coldstart.ps1"
+    "verify:coldstart": "powershell -NoProfile -ExecutionPolicy Bypass -File verify-coldstart.ps1",
+    "verify:video": "powershell -NoProfile -ExecutionPolicy Bypass -File verify-video.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2"

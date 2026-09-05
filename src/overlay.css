@@ -1,9 +1,10 @@
+@import "./theme.css";
+
 :root {
-  --text: #ede9e1;
-  --amber: #e6a54c;
-  --amber-soft: rgba(240, 184, 108, 0.65);
-  --glass: rgba(19, 17, 21, 0.9);
-  --glass-line: rgba(255, 244, 225, 0.14);
+  --amber: var(--accent);
+  --amber-soft: rgba(165, 180, 252, 0.65);
+  --glass: rgba(25, 28, 36, 0.96);
+  --glass-line: rgba(180, 193, 224, 0.22);
   --shade: rgba(14, 12, 16, 0.44);
   --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
 }
@@ -23,6 +24,79 @@ body {
   user-select: none;
   font: 600 12px/1 var(--mono);
   color: var(--text);
+}
+
+/* A recording is running: the window is see-through and this page is only
+   the frame around the region. The window itself is built transparent; the
+   black above is what makes it opaque the rest of the time. */
+body.live {
+  background: transparent;
+  cursor: default;
+}
+body.live #frozen,
+body.live #dim {
+  display: none;
+}
+
+/* Drawn outside the region by its full width, so the recorded pixels are
+   exactly the ones that were selected. The red is a recording's red; the
+   dotted white keeps it visible on any background. */
+#frame {
+  position: fixed;
+  box-sizing: border-box;
+  pointer-events: none;
+  outline: 3px solid var(--rec);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.35), 0 0 0 6px rgba(0, 0, 0, 0.35);
+}
+
+/* The mode badge, top centre: which of the two a drag is about to do. */
+#mode {
+  position: fixed;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border-radius: 9px;
+  background: var(--glass);
+  border: 1px solid var(--glass-line);
+  font: 600 12px var(--sans);
+  color: rgba(237, 233, 225, 0.85);
+  pointer-events: none;
+}
+#mode i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  border: 2px solid var(--amber);
+  box-sizing: border-box;
+}
+body.video #mode i {
+  border-radius: 50%;
+  border: 0;
+  background: var(--rec);
+  animation: blink 1.2s ease-in-out infinite;
+}
+@keyframes blink {
+  50% {
+    opacity: 0.35;
+  }
+}
+/* Two wordings, one shown. */
+.rec {
+  display: none;
+}
+body.video .rec {
+  display: inline;
+}
+body.video .shot {
+  display: none;
+}
+body.live #mode {
+  display: none;
 }
 
 #frozen {
@@ -123,7 +197,7 @@ body {
 #loupe i,
 #loupe b {
   position: absolute;
-  background: rgba(230, 165, 76, 0.85);
+  background: var(--amber-soft);
 }
 #loupe i {
   left: 50%;
@@ -179,13 +253,13 @@ body {
 #hint {
   position: fixed;
   left: 50%;
-  bottom: 48px;
+  bottom: 28px;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 8px 16px;
-  border-radius: 999px;
+  gap: 18px;
+  padding: 12px 16px;
+  border-radius: 12px;
   background: var(--glass);
   border: 1px solid var(--glass-line);
   font: 400 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -202,8 +276,12 @@ body {
   font: 500 10.5px var(--mono);
   color: var(--text);
 }
-#hint .dot {
-  color: rgba(237, 233, 225, 0.35);
+.hint-action { white-space: nowrap; font-weight: 600; color: var(--text); }
+.hint-keys { display: flex; gap: 12px; white-space: nowrap; }
+@media (max-width: 680px) {
+  #hint { box-sizing: border-box; width: max-content; max-width: calc(100% - 24px); flex-direction: column; gap: 10px; padding: 12px; }
+  .hint-keys { gap: 10px; font-size: 11px; }
+  #hint kbd { padding: 2px 4px; font-size: 10px; }
 }
 
 [hidden] {

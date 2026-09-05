@@ -31,7 +31,9 @@ panic = "abort"
 strip = true
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon", "image-png"] }
+# protocol-asset: the pin plays recordings straight from disk, with range
+# requests, instead of pulling a whole MP4 through the IPC.
+tauri = { version = "2", features = ["tray-icon", "image-png", "protocol-asset"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +45,7 @@ xcap = "0.9"
 tokio = { version = "1", features = ["sync"] }
 image = "0.25"
 arboard = "3.6"
+windows-capture = "2.0.1"
 
 # Only for dragout.rs, which builds the OLE drop payload by hand so it can offer
 # the file and the path at once. 0.52 because that is the API the reference

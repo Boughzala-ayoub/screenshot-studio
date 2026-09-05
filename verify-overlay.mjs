@@ -10,13 +10,15 @@
 // reads, so the crop would silently land on the wrong pixels.
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const CHROME =
   process.env.CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
-const ORIGIN = "http://localhost:4173";
+// PORT=... when something else already sits on 4173.
+const PORT = process.env.PORT || "4173";
+const ORIGIN = `http://localhost:${PORT}`;
 const URL_ = `${ORIGIN}/overlay.html`;
 const CDP_PORT = 9333;
 const WIDTHS = [320, 375, 768, 1024, 1280, 1920];
@@ -54,6 +56,7 @@ class Cdp {
     this.once = new Map();
     ws.addEventListener("message", (e) => {
       const m = JSON.parse(e.data);
+      if (m.method === "Runtime.exceptionThrown") fail(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
       if (m.id && this.pending.has(m.id)) {
         const { resolve, reject } = this.pending.get(m.id);
         this.pending.delete(m.id);
@@ -78,17 +81,42 @@ class Cdp {
 
 // Everything the overlay touches of the Tauri bridge, recorded instead of sent.
 const STUB = `window.__TAURI_INTERNALS__ = {
+  convertFileSrc() { return window.__videoUrl; },
   invoke(cmd, args) {
     (window.__calls ||= []).push({ cmd, args });
     if (cmd === "get_settings")
-      return Promise.resolve({ hotkey: "Ctrl+Shift+4", autostart: true });
-    if (cmd === "recent_shots") return Promise.resolve(["a.png"]);
+      return Promise.resolve({ hotkey: "Ctrl+Shift+4", record_hotkey: "Ctrl+Shift+5", autostart: true });
+    if (cmd === "recent_shots") {
+      if (!location.search.includes("video")) return Promise.resolve(["a.png"]);
+      return new Promise((resolve) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = 640; canvas.height = 360;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#253455"; ctx.fillRect(0, 0, 640, 360);
+        ctx.fillStyle = "#eef0f6"; ctx.font = "24px sans-serif";
+        ctx.fillText("Recording preview", 40, 80);
+        const stream = canvas.captureStream(0);
+        const recorder = new MediaRecorder(stream, { mimeType: "video/webm" });
+        recorder.ondataavailable = (e) => {
+          window.__videoUrl = URL.createObjectURL(e.data);
+          stream.getTracks().forEach((t) => t.stop());
+          resolve(["recording.mp4"]);
+        };
+        recorder.start();
+        stream.getVideoTracks()[0].requestFrame();
+        setTimeout(() => recorder.stop(), 250);
+      });
+    }
+    if (cmd === "edit_target") return Promise.resolve("a.png");
+    if (cmd === "recording_ms") return Promise.resolve(65000);
     // Like the real backend: one generation per "press", then park for ever.
     // Resolving every call spins the overlay's capture loop, and its reset()
     // lands mid-drag and nulls the selection under the test's cursor.
+    // ?video on the URL arms a recording instead of a still.
     if (cmd === "await_frame") {
       window.__gen = (window.__gen || 0) + 1;
-      return window.__gen > 1 ? new Promise(() => {}) : Promise.resolve(1);
+      const info = { gen: 1, video: location.search.includes("video") };
+      return window.__gen > 1 ? new Promise(() => {}) : Promise.resolve(info);
     }
     if (cmd !== "frozen_frame" && cmd !== "shot_png")
       return Promise.resolve(new ArrayBuffer(0));
@@ -111,8 +139,9 @@ const STUB = `window.__TAURI_INTERNALS__ = {
 };`;
 
 async function main() {
+  if (process.env.SHOT_DIR) mkdirSync(process.env.SHOT_DIR, { recursive: true });
   kids.push(
-    spawn("npx", ["vite", "preview", "--port", "4173", "--strictPort"], {
+    spawn("npx", ["vite", "preview", "--port", PORT, "--strictPort"], {
       stdio: "ignore",
       shell: true,
     }),
@@ -237,6 +266,44 @@ async function main() {
   else if (!cmds.includes("cancel_capture")) fail(`a bare click sent ${JSON.stringify(cmds)}`);
   else pass("a bare click cancels instead of capturing");
 
+  // --- record mode: badge, then the frame around the region ---------------
+  // The same drag arms a recording. Afterwards Rust calls recFrame() and the
+  // page becomes a see-through frame drawn outside the region.
+  const loadedV = cdp.event("Page.loadEventFired");
+  await s("Emulation.setDeviceMetricsOverride", {
+    width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false,
+  });
+  await s("Page.navigate", { url: `${URL_}?video` });
+  await loadedV;
+  await overlayReady();
+  const badge = await read("document.body.classList.contains('video') && getComputedStyle(document.querySelector('#mode .rec')).display !== 'none'");
+  if (!badge) fail("record mode does not show the Record badge");
+  else pass("record mode shows the Record badge");
+  await drag([[100, 100], [500, 400]]);
+  await sleep(50);
+  const vcalls = await read("JSON.stringify(window.__calls || [])").then(JSON.parse);
+  const vfinish = vcalls.find((c) => c.cmd === "finish_capture");
+  if (!vfinish || JSON.stringify(vfinish.args.rect) !== JSON.stringify(want))
+    fail(`record drag sent ${JSON.stringify(vfinish?.args)}`);
+  else pass("record drag reports the same rect as a still");
+  await read("recFrame(100, 100, 400, 300); true");
+  const frame = await read(
+    "JSON.stringify([document.body.classList.contains('live'), getComputedStyle(document.body).backgroundColor," +
+      "(({left,top,width,height}) => [left,top,width,height])(document.getElementById('frame').getBoundingClientRect())," +
+      "getComputedStyle(document.getElementById('frozen')).display, document.documentElement.scrollWidth <= document.documentElement.clientWidth])",
+  ).then(JSON.parse);
+  const [liveOn, bg, fbox, frozenDisplay, noScroll] = frame;
+  if (!liveOn || bg !== "rgba(0, 0, 0, 0)" || frozenDisplay !== "none")
+    fail(`live frame: body live=${liveOn}, background ${bg}, frozen ${frozenDisplay}`);
+  else if (JSON.stringify(fbox) !== JSON.stringify([100, 100, 400, 300]))
+    fail(`live frame box ${JSON.stringify(fbox)}, want [100,100,400,300]`);
+  else if (!noScroll) fail("live frame overflows horizontally");
+  else pass("recFrame() turns the page into a see-through frame on the region");
+  await read("recDone(); true");
+  const back = await read("!document.body.classList.contains('live') && document.getElementById('frame').hidden");
+  if (!back) fail("recDone() did not restore the overlay");
+  else pass("recDone() restores the overlay");
+
   // --- no horizontal overflow at any width ------------------------------
   for (const width of WIDTHS) {
     await s("Emulation.setDeviceMetricsOverride", {
@@ -261,13 +328,24 @@ async function main() {
   }
 
   // --- the fixed-size windows hold their layout too ---------------------
-  // The settings window is 400 logical px, the pin bottoms out at 240. Checked
+  // The settings window is 400 logical px, the pin bottoms out at 272. Checked
   // at those widths and one narrower, because a crushed row overflows silently.
   for (const [page, width, height] of [
-    ["settings.html", 400, 330],
-    ["settings.html", 320, 330],
-    ["preview.html", 240, 100],
+    ["settings.html", 400, 440],
+    ["settings.html", 320, 440],
+    ["preview.html", 272, 100],
     ["preview.html", 420, 320],
+    // ?rec so it is a real navigation, not a hash change that fires no load event.
+    ["preview.html?rec#rec", 168, 36],
+    ["preview.html?kind=video", 272, 100],
+    ["editor.html", 640, 420],
+    ["editor.html", 900, 620],
+    ["editor.html", 1280, 800],
+    ...WIDTHS.filter((w) => w <= 1280).flatMap((width) =>
+      ["settings.html", "preview.html", "preview.html?kind=video", "preview.html?rec#rec", "editor.html", "overlay.html", "overlay.html?video"]
+        .map((page) => [page, width, 700])),
+    ["editor.html", 681, 700],
+    ["overlay.html", 681, 700],
   ]) {
     await s("Emulation.setDeviceMetricsOverride", {
       width, height, deviceScaleFactor: 1, mobile: false,
@@ -275,7 +353,12 @@ async function main() {
     const loadedP = cdp.event("Page.loadEventFired");
     await s("Page.navigate", { url: `${ORIGIN}/${page}` });
     await loadedP;
-    await sleep(60);
+    if (page.startsWith("overlay")) await overlayReady();
+    else if (page.startsWith("editor")) await waitFor("editor ready", () => read("document.body.classList.contains('in')"));
+    else if (page.includes("kind=video")) await waitFor("video ready", () => read("!document.getElementById('clip').hidden && document.getElementById('clip').videoWidth > 0"));
+    else if (page.startsWith("settings")) await waitFor("shortcuts ready", () => read("!!document.querySelector('#recorder kbd')"));
+    else await waitFor("preview ready", () => read("document.body.classList.contains('in')"));
+    await sleep(200);
     const [dsw, dcw, bsw, bcw] = await read(
       "JSON.stringify([document.documentElement.scrollWidth, document.documentElement.clientWidth," +
         "document.body.scrollWidth, document.body.clientWidth])",
@@ -283,6 +366,155 @@ async function main() {
     if (dsw > dcw || bsw > bcw)
       fail(`${page} at ${width}px overflows: doc ${dsw}/${dcw}, body ${bsw}/${bcw}`);
     else pass(`${page} at ${width}px: no horizontal overflow`);
+    // SHOT_DIR=dir to eyeball each of them, once the page has faded in.
+    if (process.env.SHOT_DIR) {
+      await sleep(400);
+      const { data } = await s("Page.captureScreenshot", { format: "png" });
+      const name = `${page.replace(/[^a-z]+/g, "-")}${width}.png`;
+      writeFileSync(join(process.env.SHOT_DIR, name), Buffer.from(data, "base64"));
+    }
+
+    const auditState = async (state) => {
+      const issues = await read(`(() => {
+        const root = document.documentElement;
+        const issues = root.scrollWidth > root.clientWidth ? ['document overflow'] : [];
+        for (const el of document.querySelectorAll('button, summary, .recorder, #textbox, #hint')) {
+          if (!el.checkVisibility()) continue;
+          const r = el.getBoundingClientRect();
+          if (r.left < 0 || r.right > innerWidth + 1 || r.width < 1) issues.push(el.id || el.tagName);
+          if (!location.pathname.includes('settings') && r.bottom > innerHeight + 1) issues.push((el.id || el.tagName) + ' below viewport');
+        }
+        return issues;
+      })()`);
+      if (issues.length) fail(`${page} ${state} at ${width}px: ${issues.join(', ')}`);
+      else pass(`${page} ${state} at ${width}px: controls fit`);
+      if (process.env.SHOT_DIR) {
+        const { data } = await s("Page.captureScreenshot", { format: "png" });
+        writeFileSync(join(process.env.SHOT_DIR, `${page.replace(/[^a-z]+/g, "-")}${width}-${state}.png`), Buffer.from(data, "base64"));
+      }
+    };
+    await auditState("default");
+    if (page.startsWith("preview") && !page.includes("#rec")) {
+      await read("document.querySelector('summary').click()");
+      await auditState("menu");
+      await read("document.getElementById('path').click()");
+      if (!await read("!document.querySelector('.more').open && window.__calls.some(c => c.cmd === 'copy_path')"))
+        fail("menu action must copy the path and close");
+      await read("document.querySelector('summary').click()");
+      await s("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape" });
+      if (!await read("!document.querySelector('.more').open && !window.__calls.some(c => c.cmd === 'close_preview')"))
+        fail("Escape must dismiss the menu without closing the pin");
+    }
+    if (page.startsWith("settings")) {
+      await read("document.getElementById('recorder').focus()");
+      await auditState("shortcut-focus");
+      await s("Input.dispatchKeyEvent", { type: "keyDown", key: "Tab", code: "Tab" });
+      if (!await read("document.activeElement.id === 'recorder-video'")) fail("Tab must leave the shortcut field");
+      await s("Input.dispatchKeyEvent", { type: "keyDown", key: "6", code: "Digit6", modifiers: 10 });
+      await sleep(30);
+      if (!await read("window.__calls.some(c => c.cmd === 'set_hotkey' && c.args.hotkey === 'Ctrl+Shift+6' && c.args.record)")) fail("shortcut change was not saved");
+      await read("document.getElementById('autostart').click()");
+      if (!await read("window.__calls.some(c => c.cmd === 'set_autostart' && c.args.on === false)")) fail("autostart toggle was not saved");
+    }
+    if (page.startsWith("editor")) {
+      await read("document.querySelector('[data-tool=text]').click()");
+      const r = await read("document.getElementById('canvas').getBoundingClientRect().toJSON()");
+      await drag([[r.right - 20, r.top + 20]]);
+      await auditState("text-open");
+      if (!await read("document.querySelector('[data-tool=text]').getAttribute('aria-pressed') === 'true' && !document.getElementById('textbox').hidden")) fail("text tool must show its selected state and input");
+    }
+    if (page.startsWith("overlay")) {
+      await drag([[10, 80], [width - 8, height - 80]]);
+      await auditState("selection");
+      if (page.includes("video")) {
+        await read(`recFrame(10, 80, ${width - 18}, ${height - 160})`);
+        await auditState("recording-frame");
+      }
+    }
+  }
+
+  // --- the stop bar --------------------------------------------------------
+  await s("Emulation.setDeviceMetricsOverride", {
+    width: 168, height: 36, deviceScaleFactor: 1, mobile: false,
+  });
+  const loadedRec = cdp.event("Page.loadEventFired");
+  await s("Page.navigate", { url: `${ORIGIN}/preview.html?rec#rec` });
+  await loadedRec;
+  await sleep(120);
+  const bar = await read(
+    "JSON.stringify([document.body.classList.contains('rec'), getComputedStyle(document.querySelector('header')).display," +
+      "document.getElementById('clock').textContent, (window.__calls||[]).some(c => c.cmd === 'preview_ready')])",
+  ).then(JSON.parse);
+  if (!bar[0] || bar[1] !== "none" || bar[2] !== "1:05" || !bar[3])
+    fail(`stop bar: ${JSON.stringify(bar)}`);
+  else pass("#rec turns the pin into the stop bar with the backend's clock");
+  const stopBox = await read("JSON.stringify(document.getElementById('stop').getBoundingClientRect())").then(JSON.parse);
+  await drag([[stopBox.x + stopBox.width / 2, stopBox.y + stopBox.height / 2]]);
+  await sleep(30);
+  const stopped = await read("(window.__calls||[]).some(c => c.cmd === 'stop_recording')");
+  if (!stopped) fail("the stop button did not send stop_recording");
+  else pass("the stop button sends stop_recording");
+
+  // --- the editor: a drag draws, save sends PNG bytes ----------------------
+  await s("Emulation.setDeviceMetricsOverride", {
+    width: 1280, height: 800, deviceScaleFactor: 1, mobile: false,
+  });
+  const loadedEd = cdp.event("Page.loadEventFired");
+  await s("Page.navigate", { url: `${ORIGIN}/editor.html` });
+  await loadedEd;
+  await waitFor("editor_ready", () => read("(window.__calls||[]).some(c => c.cmd === 'editor_ready')"));
+  const cbox = await read("JSON.stringify(document.getElementById('canvas').getBoundingClientRect())").then(JSON.parse);
+  if (cbox.width < 100 || cbox.right > 1280 || cbox.bottom > 800)
+    fail(`canvas box ${JSON.stringify(cbox)} does not fit the window`);
+  else pass(`editor canvas fits the window (${Math.round(cbox.width)}x${Math.round(cbox.height)})`);
+  await drag([[cbox.x + 50, cbox.y + 50], [cbox.x + 200, cbox.y + 150]]);
+  await sleep(30);
+  const undoOn = await read("!document.getElementById('undo').disabled");
+  if (!undoOn) fail("a drag on the canvas did not add a shape");
+  else pass("a drag on the canvas adds a shape (undo enabled)");
+  // A pixel on the drawn rectangle's left edge is amber, the default colour.
+  const px = await read(
+    "(() => { const c = document.getElementById('canvas'); const r = c.getBoundingClientRect();" +
+      "const sx = c.width / r.width; const d = c.getContext('2d').getImageData(Math.round(50 * sx), Math.round(100 * sx), 1, 1).data;" +
+      "return Array.from(d).join(','); })()",
+  );
+  if (px !== "230,165,76,255") fail(`rectangle edge pixel is ${px}, want 230,165,76,255`);
+  else pass("the rectangle is painted in the chosen colour");
+  await s("Input.dispatchKeyEvent", { type: "keyDown", key: "z", code: "KeyZ", modifiers: 2 });
+  await s("Input.dispatchKeyEvent", { type: "keyUp", key: "z", code: "KeyZ", modifiers: 2 });
+  await sleep(30);
+  const undone = await read("document.getElementById('undo').disabled && !document.getElementById('redo').disabled");
+  if (!undone) fail("Ctrl+Z did not undo the shape");
+  else pass("Ctrl+Z undoes, redo becomes available");
+  // The text tool: T, click, type, Enter leaves a shape behind.
+  await s("Input.dispatchKeyEvent", { type: "keyDown", key: "t", code: "KeyT" });
+  await s("Input.dispatchKeyEvent", { type: "keyUp", key: "t", code: "KeyT" });
+  await drag([[cbox.x + 300, cbox.y + 300]]);
+  await sleep(50);
+  const boxOpen = await read("!document.getElementById('textbox').hidden && document.activeElement === document.getElementById('textbox')");
+  if (!boxOpen) fail("clicking with the text tool did not open a focused text box");
+  else pass("the text tool opens a focused text box");
+  await s("Input.insertText", { text: "hello" });
+  await s("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter" });
+  await s("Input.dispatchKeyEvent", { type: "keyUp", key: "Enter", code: "Enter" });
+  await sleep(50);
+  const textShape = await read("document.getElementById('textbox').hidden && !document.getElementById('undo').disabled");
+  if (!textShape) fail("Enter did not commit the text as a shape");
+  else pass("Enter commits the text as a shape");
+  await s("Input.dispatchKeyEvent", { type: "keyDown", key: "s", code: "KeyS", modifiers: 2 });
+  await s("Input.dispatchKeyEvent", { type: "keyUp", key: "s", code: "KeyS", modifiers: 2 });
+  await waitFor("save_edited", () => read("(window.__calls||[]).some(c => c.cmd === 'save_edited')"));
+  const saved = await read(
+    "(() => { const c = (window.__calls||[]).find(c => c.cmd === 'save_edited'); const a = c.args;" +
+      "return a instanceof Uint8Array && a.length > 8 && a[1] === 0x50 && a[2] === 0x4e && a[3] === 0x47; })()",
+  );
+  if (!saved) fail("save_edited did not carry PNG bytes as its body");
+  else pass("Ctrl+S sends the PNG bytes to save_edited");
+  if (process.env.SHOT_EDITOR) {
+    await drag([[cbox.x + 50, cbox.y + 50], [cbox.x + 200, cbox.y + 150]]);
+    const { data } = await s("Page.captureScreenshot", { format: "png" });
+    writeFileSync(process.env.SHOT_EDITOR, Buffer.from(data, "base64"));
+    pass(`editor screenshot written to ${process.env.SHOT_EDITOR}`);
   }
 
   // --- on the pin, a double right-click closes and a drag drags out -----

@@ -18,25 +18,47 @@ use tauri::{
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 mod dragout;
+mod record;
 
-/// The default only; the user's choice lives in config.json. Ctrl+Shift+4
+/// The defaults only; the user's choice lives in config.json. Ctrl+Shift+4
 /// borrows the macOS region-capture muscle memory and stays clear of
-/// Win+Shift+S.
+/// Win+Shift+S; Ctrl+Shift+5 is macOS's recording key for the same reason.
 const DEFAULT_HOTKEY: &str = "Ctrl+Shift+4";
+const DEFAULT_RECORD_HOTKEY: &str = "Ctrl+Shift+5";
 const OVERLAY: &str = "overlay";
+/// Two pins, one per kind, so a still and a recording can stay up together.
 const PREVIEW: &str = "preview";
+const VPIN: &str = "vpin";
 const SETTINGS: &str = "settings";
+const EDITOR: &str = "editor";
 const TRAY: &str = "main";
 /// Longest edge of the pinned preview, in logical pixels.
 const PREVIEW_MAX: f64 = 420.0;
 /// Height of the pin's title bar, in logical pixels. Kept in step with
 /// preview.css, which reserves the same strip.
 const PREVIEW_BAR: f64 = 32.0;
-/// How many shots survive in the folder. Older ones are deleted after each
-/// capture, so the folder never grows without asking.
+/// The pin while it is the recording's stop bar, logical pixels.
+const REC_BAR: (f64, f64) = (168.0, 36.0);
+/// How many stills survive in the folder. Older ones are deleted after each
+/// capture, so the folder never grows without asking. Recordings are kept.
 const KEEP_SHOTS: usize = 5;
 
+/// Where a recording's pin goes once it stops, remembered from the start.
+struct RecPlace {
+    w: u32,
+    h: u32,
+    scale: f64,
+    mon_pos: PhysicalPosition<i32>,
+    mon_size: PhysicalSize<u32>,
+}
+
 struct Shot {
+    /// True while the armed capture is a recording rather than a still.
+    video: std::sync::atomic::AtomicBool,
+    /// The recording in progress, if any.
+    recording: Mutex<Option<(record::Recording, RecPlace)>>,
+    /// The shot the editor window is showing, or about to.
+    editing: Mutex<Option<PathBuf>>,
     /// Every monitor composited into one frame, physical pixels, and the same
     /// frame encoded once for the overlay to paint.
     frame: Mutex<Option<RgbaImage>>,
@@ -55,26 +77,49 @@ struct Shot {
     /// a hotkey pressed before the page has even run is answered the moment it
     /// does, instead of being pushed at a webview that cannot hear it yet.
     generation: tokio::sync::watch::Sender<u64>,
+    /// One per pin window, by label: [PREVIEW, VPIN].
+    pins: [Pin; 2],
+}
+
+#[derive(Default)]
+struct Pin {
     /// False until the first capture asks for the pin. The pin window is built
     /// hidden at startup and its page runs once right away; preview_ready from
     /// that warm-up load must not show a window nobody asked for.
-    pin_wanted: std::sync::atomic::AtomicBool,
+    wanted: std::sync::atomic::AtomicBool,
     /// True while a retake from the pin has it hidden. Only that hide may be
-    /// undone by cancel_capture: the pin window now always exists, so an
+    /// undone by cancel_capture: the pin window always exists, so an
     /// unconditional show would resurrect a pin the user had dismissed.
-    pin_parked: std::sync::atomic::AtomicBool,
+    parked: std::sync::atomic::AtomicBool,
+}
+
+impl Shot {
+    fn pin(&self, label: &str) -> &Pin {
+        &self.pins[(label == VPIN) as usize]
+    }
+}
+
+/// The still pin's twin for recordings: the other label, the other kind.
+fn pin_label(video: bool) -> &'static str {
+    if video {
+        VPIN
+    } else {
+        PREVIEW
+    }
 }
 
 impl Default for Shot {
     fn default() -> Self {
         Self {
+            video: std::sync::atomic::AtomicBool::new(false),
+            recording: Mutex::default(),
+            editing: Mutex::default(),
             frame: Mutex::default(),
             origin: Mutex::default(),
             bounds: Mutex::default(),
             frame_bmp: Mutex::default(),
             generation: tokio::sync::watch::channel(0).0,
-            pin_wanted: std::sync::atomic::AtomicBool::new(false),
-            pin_parked: std::sync::atomic::AtomicBool::new(false),
+            pins: Default::default(),
         }
     }
 }
@@ -85,6 +130,7 @@ impl Default for Shot {
 #[serde(default)]
 struct Settings {
     hotkey: String,
+    record_hotkey: String,
     autostart: bool,
 }
 
@@ -92,6 +138,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             hotkey: DEFAULT_HOTKEY.into(),
+            record_hotkey: DEFAULT_RECORD_HOTKEY.into(),
             // On by default: WebView2's first environment creation costs 3-35 s
             // on this machine, and paying it at login instead of at the first
             // hotkey press is most of the cold-start fix.
@@ -103,7 +150,10 @@ impl Default for Settings {
 struct Cfg(Mutex<Settings>);
 
 fn settings_path(app: &AppHandle) -> Option<PathBuf> {
-    app.path().app_config_dir().ok().map(|d| d.join("config.json"))
+    app.path()
+        .app_config_dir()
+        .ok()
+        .map(|d| d.join("config.json"))
 }
 
 /// (settings, first_run). Any unreadable or unparsable file counts as a first
@@ -116,7 +166,9 @@ fn load_settings(app: &AppHandle) -> (Settings, bool) {
 }
 
 fn save_settings(app: &AppHandle, s: &Settings) {
-    let Some(path) = settings_path(app) else { return };
+    let Some(path) = settings_path(app) else {
+        return;
+    };
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -207,8 +259,9 @@ fn stale_shots(mut shots: Vec<(SystemTime, PathBuf)>, keep: usize) -> Vec<PathBu
     shots.into_iter().skip(keep).map(|(_, p)| p).collect()
 }
 
-/// Every shot in the folder with its timestamp. Only the PNGs this app writes;
-/// anything else the user put there is invisible to pruning and to the pin.
+/// Every shot in the folder with its timestamp. Only the files this app
+/// writes; anything else the user put there is invisible to pruning and to
+/// the pin.
 fn list_shots(dir: &Path) -> Vec<(SystemTime, PathBuf)> {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -231,12 +284,17 @@ fn list_shots(dir: &Path) -> Vec<(SystemTime, PathBuf)> {
 fn is_shot_name(path: &Path) -> bool {
     path.file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.starts_with("shot-") && n.ends_with(".png"))
+        .is_some_and(|n| n.starts_with("shot-") && (n.ends_with(".png") || n.ends_with(".mp4")))
 }
 
-/// Trim the folder to the newest `keep` shots.
+/// Trim the folder to the newest `keep` stills. Recordings are never pruned:
+/// a ten-minute video is not something five quick screenshots should delete.
 fn prune_shots(dir: &Path, keep: usize) {
-    for path in stale_shots(list_shots(dir), keep) {
+    let stills = list_shots(dir)
+        .into_iter()
+        .filter(|(_, p)| p.extension().is_some_and(|e| e == "png"))
+        .collect();
+    for path in stale_shots(stills, keep) {
         if let Err(e) = std::fs::remove_file(&path) {
             eprintln!("prune {}: {e}", path.display());
         }
@@ -251,7 +309,11 @@ fn checked_shot(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
     if path.parent() == Some(dir.as_path()) && is_shot_name(&path) && path.is_file() {
         Ok(path)
     } else {
-        Err(format!("not a shot in {}: {}", dir.display(), path.display()))
+        Err(format!(
+            "not a shot in {}: {}",
+            dir.display(),
+            path.display()
+        ))
     }
 }
 
@@ -332,7 +394,10 @@ fn bmp_bytes(img: &RgbaImage) -> Vec<u8> {
     out[28..30].copy_from_slice(&32u16.to_le_bytes()); // bits per pixel
     out[34..38].copy_from_slice(&(pixels as u32).to_le_bytes()); // compression stays 0: BI_RGB
 
-    for (dst, src) in out[HEADER..].chunks_exact_mut(4).zip(img.as_raw().chunks_exact(4)) {
+    for (dst, src) in out[HEADER..]
+        .chunks_exact_mut(4)
+        .zip(img.as_raw().chunks_exact(4))
+    {
         dst[0] = src[2]; // B
         dst[1] = src[1]; // G
         dst[2] = src[0]; // R
@@ -341,16 +406,35 @@ fn bmp_bytes(img: &RgbaImage) -> Vec<u8> {
     out
 }
 
+/// A fresh, unique name in the shots folder for this moment. Two captures
+/// inside the same second would otherwise share a name and the second would
+/// quietly replace the first.
+fn fresh_shot_path(dir: &Path, ext: &str) -> PathBuf {
+    let base = stamp();
+    let mut path = dir.join(format!("shot-{base}.{ext}"));
+    for n in 2..100 {
+        if !path.exists() {
+            break;
+        }
+        path = dir.join(format!("shot-{base}-{n}.{ext}"));
+    }
+    path
+}
+
 /// Freeze every monitor into one frame and hand it to the standing overlay by
 /// bumping the capture generation, so a selection can start on one screen and
 /// end on another. Safe to call from any thread: nothing here touches a window.
-fn begin_capture(app: &AppHandle) -> Result<(), String> {
+/// `video`: the selection starts a recording instead of taking a still.
+fn begin_capture(app: &AppHandle, video: bool) -> Result<(), String> {
     let visible = app
         .get_webview_window(OVERLAY)
         .is_some_and(|w| w.is_visible().unwrap_or(false));
     if visible {
-        return Ok(()); // already selecting
+        return Ok(()); // already selecting, or the overlay is framing a recording
     }
+    app.state::<Shot>()
+        .video
+        .store(video, std::sync::atomic::Ordering::Relaxed);
     let monitors: Vec<(i32, i32, u32, u32)> = app
         .available_monitors()
         .map_err(|e| e.to_string())?
@@ -379,8 +463,9 @@ fn begin_capture(app: &AppHandle) -> Result<(), String> {
                 .iter()
                 .map(|&(mx, my, mw, mh)| {
                     s.spawn(move || {
-                        let shot = xcap::Monitor::from_point(mx + mw as i32 / 2, my + mh as i32 / 2)
-                            .and_then(|m| m.capture_image());
+                        let shot =
+                            xcap::Monitor::from_point(mx + mw as i32 / 2, my + mh as i32 / 2)
+                                .and_then(|m| m.capture_image());
                         (mx, my, shot)
                     })
                 })
@@ -417,7 +502,11 @@ fn begin_capture(app: &AppHandle) -> Result<(), String> {
     // Everything the page needs is in place; wake it. send_modify rather than
     // send so a bump with no receiver parked yet is kept, not dropped.
     state.generation.send_modify(|g| *g += 1);
-    eprintln!("capture: gen {} armed, t+{}ms", *state.generation.borrow(), uptime_ms());
+    eprintln!(
+        "capture: gen {} armed, t+{}ms",
+        *state.generation.borrow(),
+        uptime_ms()
+    );
     Ok(())
 }
 
@@ -452,16 +541,26 @@ fn undo_frame_inset(w: &tauri::WebviewWindow, pos: PhysicalPosition<i32>) -> Res
 /// on a cold WebView2 its page can take ten-plus seconds to run, and anything
 /// pushed at it in that gap (an eval, an event, a reload) is simply lost. A
 /// request the backend completes cannot be.
+#[derive(Serialize)]
+struct FrameInfo {
+    gen: u64,
+    video: bool,
+}
+
 #[tauri::command]
-async fn await_frame(state: State<'_, Shot>, seen: u64) -> Result<u64, String> {
+async fn await_frame(state: State<'_, Shot>, seen: u64) -> Result<FrameInfo, String> {
     // The one cold-start telemetry line: how long after launch the overlay's
     // page first ran. Free in release, where stderr goes nowhere.
     eprintln!("await_frame: page at gen {seen}, t+{}ms", uptime_ms());
     let mut rx = state.generation.subscribe();
     // wait_for checks the current value first, so a capture that fired before
     // the page ever ran is answered immediately.
-    let gen = rx.wait_for(|g| *g > seen).await.map_err(|e| e.to_string())?;
-    Ok(*gen)
+    let gen = *rx
+        .wait_for(|g| *g > seen)
+        .await
+        .map_err(|e| e.to_string())?;
+    let video = state.video.load(std::sync::atomic::Ordering::Relaxed);
+    Ok(FrameInfo { gen, video })
 }
 
 /// The page has painted the frame: put the overlay where the capture said and
@@ -495,13 +594,16 @@ fn frozen_frame(state: State<Shot>) -> Result<tauri::ipc::Response, String> {
     Ok(tauri::ipc::Response::new(bmp))
 }
 
-/// The shots the pin can flip through, newest first.
+/// The shots the calling pin can flip through, newest first: stills for the
+/// still pin, recordings for the video pin.
 #[tauri::command]
-fn recent_shots(app: AppHandle) -> Result<Vec<String>, String> {
+fn recent_shots(app: AppHandle, window: tauri::WebviewWindow) -> Result<Vec<String>, String> {
+    let ext = if window.label() == VPIN { "mp4" } else { "png" };
     let mut shots = list_shots(&shots_dir(&app)?);
     shots.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(shots
         .into_iter()
+        .filter(|(_, p)| p.extension().is_some_and(|e| e == ext))
         .take(KEEP_SHOTS)
         .map(|(_, p)| p.to_string_lossy().into_owned())
         .collect())
@@ -573,12 +675,14 @@ fn drag_shot(app: AppHandle, path: String) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
-/// Resize the pin around whichever shot it is showing, keeping its corner put.
+/// Resize the calling pin around whichever shot it is showing, keeping its
+/// corner put.
 #[tauri::command]
-fn fit_pin(app: AppHandle, w: u32, h: u32) -> Result<(), String> {
-    let win = app.get_webview_window(PREVIEW).ok_or("no pin")?;
-    let scale = win.scale_factor().map_err(|e| e.to_string())?;
-    win.set_size(pin_size(w, h, scale)).map_err(|e| e.to_string())
+fn fit_pin(window: tauri::WebviewWindow, w: u32, h: u32) -> Result<(), String> {
+    let scale = window.scale_factor().map_err(|e| e.to_string())?;
+    window
+        .set_size(pin_size(w, h, scale))
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -586,29 +690,35 @@ fn cancel_capture(app: AppHandle, state: State<Shot>) {
     if let Some(w) = app.get_webview_window(OVERLAY) {
         let _ = w.hide(); // kept alive so the next capture is instant
     }
-    // A retake started from the pin hid it to keep it out of the frame, so a
+    // A retake started from a pin hid it to keep it out of the frame, so a
     // cancelled retake has to put it back or the shot is left with no window.
-    // Only that hide: the user closing the pin parks nothing.
-    if state.pin_parked.swap(false, std::sync::atomic::Ordering::Relaxed) {
-        if let Some(w) = app.get_webview_window(PREVIEW) {
-            let _ = w.show();
+    // Only that hide: the user closing a pin parks nothing.
+    for label in [PREVIEW, VPIN] {
+        if state
+            .pin(label)
+            .parked
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
+            if let Some(w) = app.get_webview_window(label) {
+                let _ = w.show();
+            }
         }
     }
 }
 
-/// Retake, from the pin's own button. The pin is sitting on top of whatever is
+/// Retake, from a pin's own button: a new still from the still pin, a new
+/// recording from the video pin. The pin is sitting on top of whatever is
 /// about to be shot, so it leaves the screen before the frame is frozen. Hidden
 /// rather than closed: the next crop reuses this window, and a cancel puts it
 /// straight back.
 #[tauri::command(async)]
-fn new_capture(app: AppHandle, state: State<Shot>) -> Result<(), String> {
-    let visible = app
-        .get_webview_window(PREVIEW)
-        .filter(|w| w.is_visible().unwrap_or(false));
-    if let Some(w) = visible {
-        let _ = w.hide();
+fn new_capture(app: AppHandle, state: State<Shot>, window: tauri::WebviewWindow) -> Result<(), String> {
+    let video = window.label() == VPIN;
+    if window.is_visible().unwrap_or(false) {
+        let _ = window.hide();
         state
-            .pin_parked
+            .pin(window.label())
+            .parked
             .store(true, std::sync::atomic::Ordering::Relaxed);
         // ponytail: fixed wait for the desktop to repaint where the pin was.
         // Nothing announces that repaint short of watching the pixels. Raise it
@@ -616,20 +726,18 @@ fn new_capture(app: AppHandle, state: State<Shot>) -> Result<(), String> {
         std::thread::sleep(std::time::Duration::from_millis(120));
     }
     // A capture that never armed would leave the pin hidden with no way back.
-    begin_capture(&app).inspect_err(|_| {
+    begin_capture(&app, video).inspect_err(|_| {
         let s = app.state::<Shot>();
         cancel_capture(app.clone(), s)
     })
 }
 
 #[tauri::command]
-fn close_preview(app: AppHandle) {
+fn close_preview(window: tauri::WebviewWindow) {
     // Hidden, never closed: building a webview window costs 3-11 s on this
     // machine (measured), and a closed pin made every next capture pay it.
     // Hidden, the next capture is a ~100 ms reload.
-    if let Some(w) = app.get_webview_window(PREVIEW) {
-        let _ = w.hide();
-    }
+    let _ = window.hide();
 }
 
 // async so it lands on a worker thread. A sync command runs on the main thread,
@@ -642,7 +750,167 @@ fn finish_capture(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<S
     // Err would look exactly like the hotkey never firing.
     // ponytail: stderr only, which is nothing in a release build. Worth a tray
     // balloon once there is anything else to report.
-    crop_and_deliver(app, state, rect).inspect_err(|e| eprintln!("finish_capture: {e}"))
+    if state.video.load(std::sync::atomic::Ordering::Relaxed) {
+        start_recording(app, state, rect).inspect_err(|e| eprintln!("start_recording: {e}"))
+    } else {
+        crop_and_deliver(app, state, rect).inspect_err(|e| eprintln!("finish_capture: {e}"))
+    }
+}
+
+/// Start recording the selection. The overlay stays up as a click-through
+/// frame around the region, and the pin becomes the stop bar.
+fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<String, String> {
+    let overlay = app.get_webview_window(OVERLAY).ok_or("overlay is gone")?;
+    let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
+    let (fw, fh) = {
+        let guard = state.frame.lock().unwrap();
+        let frame = guard.as_ref().ok_or("nothing captured")?;
+        frame.dimensions()
+    };
+    let (x, y, w, h) = css_rect_to_physical(rect, scale, fw, fh).ok_or("empty selection")?;
+    let origin = *state.origin.lock().unwrap();
+    let (dx, dy) = (origin.0 + x as i32, origin.1 + y as i32); // desktop coordinates
+    let centre = (dx + w as i32 / 2, dy + h as i32 / 2);
+
+    // Graphics Capture records one monitor; the region is clipped to the one
+    // under its centre. ponytail: a selection spanning two screens records
+    // only the part on that screen.
+    let monitor = app
+        .monitor_from_point(centre.0 as f64, centre.1 as f64)
+        .map_err(|e| e.to_string())?
+        .ok_or("no monitor under the selection")?;
+    let (mon_pos, mon_size) = (*monitor.position(), *monitor.size());
+    let crop = record::even_crop(
+        dx - mon_pos.x,
+        dy - mon_pos.y,
+        w,
+        h,
+        mon_size.width,
+        mon_size.height,
+    )
+    .ok_or("selection too small to record")?;
+    let hmonitor = unsafe {
+        use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTONEAREST};
+        MonitorFromPoint(
+            windows::Win32::Foundation::POINT {
+                x: centre.0,
+                y: centre.1,
+            },
+            MONITOR_DEFAULTTONEAREST,
+        )
+        .0
+    };
+
+    let dir = shots_dir(&app)?;
+    let path = fresh_shot_path(&dir, "mp4");
+    let rec = record::start(hmonitor, crop, path.clone())?;
+    let place = RecPlace {
+        w: crop.w,
+        h: crop.h,
+        scale,
+        mon_pos,
+        mon_size,
+    };
+    *state.recording.lock().unwrap() = Some((rec, place));
+    eprintln!("record: {}x{} -> {}", crop.w, crop.h, path.display());
+
+    // The overlay turns into the frame: transparent, mouse passes through.
+    let _ = overlay.set_ignore_cursor_events(true);
+    let _ = overlay.eval(&format!(
+        "recFrame({},{},{},{})",
+        rect.x, rect.y, rect.w, rect.h
+    ));
+
+    // The stop bar sits at the bottom of the recorded monitor, or the top if
+    // the region reaches down there, so it stays out of the recording.
+    let bar = PhysicalSize::new(
+        (REC_BAR.0 * scale).round() as u32,
+        (REC_BAR.1 * scale).round() as u32,
+    );
+    let margin = (24.0 * scale) as i32;
+    let bx = mon_pos.x + (mon_size.width as i32 - bar.width as i32) / 2;
+    let bottom = mon_pos.y + mon_size.height as i32 - bar.height as i32 - margin;
+    let region_bottom = dy + h as i32;
+    let by = if region_bottom > bottom - margin {
+        mon_pos.y + margin
+    } else {
+        bottom
+    };
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        let shot = handle.state::<Shot>();
+        let pin = shot.pin(VPIN);
+        pin.wanted.store(true, std::sync::atomic::Ordering::Relaxed);
+        pin.parked.store(false, std::sync::atomic::Ordering::Relaxed);
+        if let Some(w) = handle.get_webview_window(VPIN) {
+            let _ = w.set_size(bar);
+            let _ = w.set_position(PhysicalPosition::new(bx, by));
+            let _ = w.eval("location.hash='rec';location.reload()");
+        }
+        refresh_tray(&handle);
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+/// Stop the recording, from the pin's stop button, the hotkey or the tray.
+/// The file is then pinned like a still.
+#[tauri::command(async)]
+fn stop_recording(app: AppHandle, state: State<Shot>) -> Result<(), String> {
+    let Some((rec, place)) = state.recording.lock().unwrap().take() else {
+        return Ok(());
+    };
+    let t = std::time::Instant::now();
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let _ = w.hide();
+        let _ = w.set_ignore_cursor_events(false);
+        let _ = w.eval("recDone()");
+    }
+    let path = record::stop(rec)?;
+    eprintln!(
+        "record: stopped in {}ms, {}",
+        t.elapsed().as_millis(),
+        path.display()
+    );
+    prune_shots(&shots_dir(&app)?, KEEP_SHOTS);
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || refresh_tray(&handle));
+    show_preview(
+        &app,
+        VPIN,
+        place.w,
+        place.h,
+        place.scale,
+        place.mon_pos,
+        place.mon_size,
+    )
+}
+
+/// How long the recording has been running, for the stop bar's clock.
+#[tauri::command]
+fn recording_ms(state: State<Shot>) -> u64 {
+    state
+        .recording
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map_or(0, |(r, _)| r.started.elapsed().as_millis() as u64)
+}
+
+/// The record hotkey toggles: press to frame, press again to stop.
+fn toggle_record(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let recording = app.state::<Shot>().recording.lock().unwrap().is_some();
+        let done = if recording {
+            stop_recording(app.clone(), app.state::<Shot>())
+        } else {
+            begin_capture(&app, true)
+        };
+        if let Err(e) = done {
+            eprintln!("record: {e}");
+        }
+    });
 }
 
 fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<String, String> {
@@ -655,7 +923,10 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
         let frame = guard.as_ref().ok_or("nothing captured")?;
         let (x, y, w, h) = css_rect_to_physical(rect, scale, frame.width(), frame.height())
             .ok_or("empty selection")?;
-        (image::imageops::crop_imm(frame, x, y, w, h).to_image(), (x, y))
+        (
+            image::imageops::crop_imm(frame, x, y, w, h).to_image(),
+            (x, y),
+        )
     };
 
     // The overlay covers every screen, so the pin belongs on whichever one the
@@ -674,16 +945,7 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
 
     let t = std::time::Instant::now();
     let dir = shots_dir(&app)?;
-    // Two captures inside the same second would otherwise share a name and the
-    // second would quietly replace the first.
-    let base = stamp();
-    let mut path = dir.join(format!("shot-{base}.png"));
-    for n in 2..100 {
-        if !path.exists() {
-            break;
-        }
-        path = dir.join(format!("shot-{base}-{n}.png"));
-    }
+    let path = fresh_shot_path(&dir, "png");
     std::fs::write(&path, png_bytes(&crop)?).map_err(|e| e.to_string())?;
     prune_shots(&dir, KEEP_SHOTS);
 
@@ -693,7 +955,15 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
     // long as any clipboard manager (Win+V history, cloud sync, remote-desktop
     // tools) holds the lock -- the "sometimes seconds" delay, and none of it
     // is the pin's business.
-    show_preview(&app, crop.width(), crop.height(), scale, mon_pos, mon_size)?;
+    show_preview(
+        &app,
+        PREVIEW,
+        crop.width(),
+        crop.height(),
+        scale,
+        mon_pos,
+        mon_size,
+    )?;
     eprintln!(
         "capture: {}x{} png+pin in {}ms",
         crop.width(),
@@ -724,7 +994,7 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
 fn pin_size(cw: u32, ch: u32, scale: f64) -> PhysicalSize<u32> {
     let shrink = (PREVIEW_MAX * scale / cw.max(ch).max(1) as f64).min(1.0);
     PhysicalSize::new(
-        ((cw as f64 * shrink).round() as u32).max((240.0 * scale).round() as u32),
+        ((cw as f64 * shrink).round() as u32).max((272.0 * scale).round() as u32),
         ((ch as f64 * shrink).round() as u32).max((72.0 * scale).round() as u32)
             + (PREVIEW_BAR * scale).round() as u32,
     )
@@ -733,6 +1003,7 @@ fn pin_size(cw: u32, ch: u32, scale: f64) -> PhysicalSize<u32> {
 /// Pin the crop bottom-right of the monitor it came from, shrunk to fit.
 fn show_preview(
     app: &AppHandle,
+    label: &'static str,
     cw: u32,
     ch: u32,
     scale: f64,
@@ -751,48 +1022,85 @@ fn show_preview(
     // size and position and never became visible.
     let handle = app.clone();
     app.run_on_main_thread(move || {
-        if let Err(e) = build_preview(&handle, pos, size) {
+        if let Err(e) = build_preview(&handle, label, pos, size, mon_pos.y) {
             eprintln!("preview: {e}");
         }
     })
     .map_err(|e| e.to_string())
 }
 
-fn build_preview(
-    app: &AppHandle,
+/// Where a pin goes when the other one is already up: stacked above it, so a
+/// still and a recording can both stay on screen. Falls back to the corner
+/// when there is no room above.
+fn stack_above(
     pos: PhysicalPosition<i32>,
     size: PhysicalSize<u32>,
+    other: Option<(PhysicalPosition<i32>, PhysicalSize<u32>)>,
+    top: i32,
+    gap: i32,
+) -> PhysicalPosition<i32> {
+    let Some((op, os)) = other else { return pos };
+    let y = op.y - size.height as i32 - gap;
+    if y < top {
+        return pos;
+    }
+    PhysicalPosition::new(op.x + os.width as i32 - size.width as i32, y)
+}
+
+fn build_preview(
+    app: &AppHandle,
+    label: &str,
+    pos: PhysicalPosition<i32>,
+    size: PhysicalSize<u32>,
+    mon_top: i32,
 ) -> Result<(), String> {
     let shot = app.state::<Shot>();
-    shot.pin_wanted
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let pin = shot.pin(label);
+    pin.wanted.store(true, std::sync::atomic::Ordering::Relaxed);
     // The retake, if this is one, delivered; there is nothing left to restore.
-    shot.pin_parked
-        .store(false, std::sync::atomic::Ordering::Relaxed);
+    pin.parked.store(false, std::sync::atomic::Ordering::Relaxed);
+    // The other pin, if it is showing, keeps its spot; this one goes above it.
+    let other = app
+        .get_webview_window(pin_label(label != VPIN))
+        .filter(|w| w.is_visible().unwrap_or(false))
+        .and_then(|w| Some((w.outer_position().ok()?, w.outer_size().ok()?)));
+    let scale = app
+        .get_webview_window(label)
+        .and_then(|w| w.scale_factor().ok())
+        .unwrap_or(1.0);
+    let pos = stack_above(pos, size, other, mon_top, (12.0 * scale) as i32);
     // The pin window stands from startup and is only ever hidden, so this is
     // normally a reload: the page re-fetches the newest shot and calls
     // preview_ready, which shows the window. The build below is the fallback
     // for a window that somehow died, and costs seconds.
-    if let Some(w) = app.get_webview_window(PREVIEW) {
+    if let Some(w) = app.get_webview_window(label) {
         eprintln!("pin: reusing window, t+{}ms", uptime_ms());
         w.set_size(size).map_err(|e| e.to_string())?;
         w.set_position(pos).map_err(|e| e.to_string())?;
-        w.eval("location.reload()").map_err(|e| e.to_string())?;
+        // The hash is cleared too: a recording just left it at #rec.
+        w.eval("location.hash='';location.reload()")
+            .map_err(|e| e.to_string())?;
         return Ok(());
     }
     eprintln!("pin: building window, t+{}ms", uptime_ms());
-    let w = pin_window(app)?;
+    let w = pin_window(app, label == VPIN)?;
     w.set_size(size).map_err(|e| e.to_string())?;
     w.set_position(pos).map_err(|e| e.to_string())?;
     eprintln!("pin: window built, t+{}ms", uptime_ms());
     Ok(()) // preview.html calls preview_ready once the crop is painted
 }
 
-/// The pin's window, hidden. Its page loads immediately and calls fit_pin and
+/// A pin's window, hidden. Its page loads immediately and calls fit_pin and
 /// preview_ready; preview_ready keeps it hidden until a capture wants it.
-fn pin_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
-    WebviewWindowBuilder::new(app, PREVIEW, WebviewUrl::App("preview.html".into()))
-        .title("Screenshot Studio - pinned")
+/// The page learns which pin it is from the URL.
+fn pin_window(app: &AppHandle, video: bool) -> Result<tauri::WebviewWindow, String> {
+    let (label, url, title) = if video {
+        (VPIN, "preview.html?kind=video", "Screenshot Studio - pinned video")
+    } else {
+        (PREVIEW, "preview.html", "Screenshot Studio - pinned")
+    };
+    WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        .title(title)
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
@@ -803,15 +1111,142 @@ fn pin_window(app: &AppHandle) -> Result<tauri::WebviewWindow, String> {
 }
 
 #[tauri::command]
-fn preview_ready(app: AppHandle, state: State<Shot>) {
-    // The startup warm-up load ends here too; only a capture may show the pin.
-    if !state.pin_wanted.load(std::sync::atomic::Ordering::Relaxed) {
+fn preview_ready(state: State<Shot>, window: tauri::WebviewWindow) {
+    // The startup warm-up load ends here too; only a capture may show a pin.
+    if !state
+        .pin(window.label())
+        .wanted
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
-    eprintln!("pin: shown, t+{}ms", uptime_ms());
-    if let Some(w) = app.get_webview_window(PREVIEW) {
-        let _ = w.show();
+    eprintln!("pin: {} shown, t+{}ms", window.label(), uptime_ms());
+    let _ = window.show();
+}
+
+/// Open the editor on a kept shot. The window stands hidden from startup;
+/// this sizes it to the picture, centred on the pin's monitor, and reloads
+/// its page, which fetches the target and calls editor_ready.
+#[tauri::command(async)]
+fn open_editor(app: AppHandle, state: State<Shot>, path: String) -> Result<(), String> {
+    let path = checked_shot(&app, &path)?;
+    let (iw, ih) = image::image_dimensions(&path).map_err(|e| e.to_string())?;
+    let pin = app.get_webview_window(PREVIEW).ok_or("no pin")?;
+    let monitor = pin
+        .current_monitor()
+        .map_err(|e| e.to_string())?
+        .or(app.primary_monitor().map_err(|e| e.to_string())?)
+        .ok_or("no monitor")?;
+    let (mp, ms, scale) = (*monitor.position(), *monitor.size(), monitor.scale_factor());
+    // The picture at 1:1 plus the toolbar and some breathing room, capped at
+    // most of the screen; the page shrinks the canvas to fit from there.
+    let (bar, pad) = (52.0 * scale, 40.0 * scale);
+    let w = (iw as f64 + pad)
+        .clamp(640.0 * scale, ms.width as f64 * 0.92)
+        .round() as u32;
+    let h = (ih as f64 + pad + bar)
+        .clamp(420.0 * scale, ms.height as f64 * 0.92)
+        .round() as u32;
+    let pos = PhysicalPosition::new(
+        mp.x + (ms.width as i32 - w as i32) / 2,
+        mp.y + (ms.height as i32 - h as i32) / 2,
+    );
+    *state.editing.lock().unwrap() = Some(path);
+    let handle = app.clone();
+    app.run_on_main_thread(move || {
+        if let Some(e) = handle.get_webview_window(EDITOR) {
+            let _ = e.set_size(PhysicalSize::new(w, h));
+            let _ = e.set_position(pos);
+            let _ = e.eval("location.reload()");
+        }
+    })
+    .map_err(|e| e.to_string())
+}
+
+/// What the editor page should load, or nothing on the startup warm-up.
+#[tauri::command]
+fn edit_target(state: State<Shot>) -> Option<String> {
+    state
+        .editing
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn editor_ready(app: AppHandle, state: State<Shot>) {
+    if state.editing.lock().unwrap().is_none() {
+        return;
     }
+    if let Some(w) = app.get_webview_window(EDITOR) {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+#[tauri::command]
+fn close_editor(app: AppHandle, state: State<Shot>) {
+    *state.editing.lock().unwrap() = None;
+    if let Some(w) = app.get_webview_window(EDITOR) {
+        let _ = w.hide();
+    }
+}
+
+/// The PNG the page rendered, sent as the raw request body: no base64, no
+/// JSON, the bytes as they are.
+fn png_body<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String> {
+    match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) if !bytes.is_empty() => Ok(bytes),
+        _ => Err("expected PNG bytes".into()),
+    }
+}
+
+fn clipboard_png(bytes: &[u8]) -> Result<(), String> {
+    let img = image::load_from_memory(bytes)
+        .map_err(|e| e.to_string())?
+        .to_rgba8();
+    arboard::Clipboard::new()
+        .and_then(|mut c| {
+            c.set_image(arboard::ImageData {
+                width: img.width() as usize,
+                height: img.height() as usize,
+                bytes: Cow::Borrowed(img.as_raw()),
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Save the annotated picture over the shot it came from, put it on the
+/// clipboard and close the editor. The pin reloads so it shows the new one.
+#[tauri::command(async)]
+fn save_edited(
+    app: AppHandle,
+    state: State<Shot>,
+    request: tauri::ipc::Request<'_>,
+) -> Result<(), String> {
+    let bytes = png_body(&request)?;
+    let path = state
+        .editing
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("nothing being edited")?;
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    clipboard_png(bytes)?;
+    close_editor(app.clone(), state);
+    if let Some(w) = app.get_webview_window(PREVIEW) {
+        if w.is_visible().unwrap_or(false) {
+            let _ = w.eval("location.reload()");
+        }
+    }
+    Ok(())
+}
+
+/// Clipboard only; the file on disk stays as it was.
+#[tauri::command(async)]
+fn copy_edited(request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    clipboard_png(png_body(&request)?)
 }
 
 #[tauri::command]
@@ -821,30 +1256,50 @@ fn get_settings(cfg: State<Cfg>) -> Settings {
 
 /// Register the new combination first, drop the old one only once that worked:
 /// a combination another app owns, or one the plugin cannot parse, errors back
-/// to the settings page and the old hotkey keeps working.
+/// to the settings page and the old hotkey keeps working. `record` picks which
+/// of the two hotkeys is being changed.
 #[tauri::command]
-fn set_hotkey(app: AppHandle, cfg: State<Cfg>, hotkey: String) -> Result<(), String> {
-    let old = cfg.0.lock().unwrap().hotkey.clone();
+fn set_hotkey(app: AppHandle, cfg: State<Cfg>, hotkey: String, record: bool) -> Result<(), String> {
+    let (old, other) = {
+        let s = cfg.0.lock().unwrap();
+        if record {
+            (s.record_hotkey.clone(), s.hotkey.clone())
+        } else {
+            (s.hotkey.clone(), s.record_hotkey.clone())
+        }
+    };
     if hotkey == old {
         return Ok(());
     }
+    if hotkey == other {
+        return Err("that is the other shortcut".into());
+    }
     let gs = app.global_shortcut();
-    gs.on_shortcut(hotkey.as_str(), on_hotkey)
+    let handler = if record { on_record_hotkey } else { on_hotkey };
+    gs.on_shortcut(hotkey.as_str(), handler)
         .map_err(|e| e.to_string())?;
     let _ = gs.unregister(old.as_str()); // may never have registered; fine
     {
         let mut s = cfg.0.lock().unwrap();
-        s.hotkey = hotkey.clone();
+        if record {
+            s.record_hotkey = hotkey;
+        } else {
+            s.hotkey = hotkey;
+        }
         save_settings(&app, &s);
     }
-    // The tray's "Capture region" line shows the hotkey; keep it honest.
+    // The tray's menu lines show the hotkeys; keep them honest.
     let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let (Some(tray), Ok(menu)) = (handle.tray_by_id(TRAY), tray_menu(&handle, &hotkey)) {
-            let _ = tray.set_menu(Some(menu));
-        }
-    });
+    let _ = app.run_on_main_thread(move || refresh_tray(&handle));
     Ok(())
+}
+
+/// Rebuild the tray menu from the current hotkeys and recording state.
+/// Main thread only.
+fn refresh_tray(app: &AppHandle) {
+    if let (Some(tray), Ok(menu)) = (app.tray_by_id(TRAY), tray_menu(app)) {
+        let _ = tray.set_menu(Some(menu));
+    }
 }
 
 #[tauri::command]
@@ -864,18 +1319,30 @@ fn on_hotkey(app: &AppHandle, _shortcut: &Shortcut, event: ShortcutEvent) {
     }
 }
 
-fn tray_menu(app: &AppHandle, hotkey: &str) -> tauri::Result<Menu<tauri::Wry>> {
-    let capture = MenuItem::with_id(app, "capture", "Capture region", true, Some(hotkey))?;
+fn on_record_hotkey(app: &AppHandle, _shortcut: &Shortcut, event: ShortcutEvent) {
+    if event.state() == ShortcutState::Pressed {
+        toggle_record(app);
+    }
+}
+
+fn tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let (hotkey, rec_hotkey) = {
+        let s = app.state::<Cfg>();
+        let s = s.0.lock().unwrap();
+        (s.hotkey.clone(), s.record_hotkey.clone())
+    };
+    let recording = app.state::<Shot>().recording.lock().unwrap().is_some();
+    let capture = MenuItem::with_id(app, "capture", "Capture region", true, Some(&hotkey))?;
+    let record_label = if recording {
+        "Stop recording"
+    } else {
+        "Record region"
+    };
+    let record = MenuItem::with_id(app, "record", record_label, true, Some(&rec_hotkey))?;
     let settings = MenuItem::with_id(app, "settings", "Settings", true, None::<&str>)?;
-    let folder = MenuItem::with_id(
-        app,
-        "folder",
-        &format!("Open shots folder (last {KEEP_SHOTS})"),
-        true,
-        None::<&str>,
-    )?;
+    let folder = MenuItem::with_id(app, "folder", "Open shots folder", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-    Menu::with_items(app, &[&capture, &settings, &folder, &quit])
+    Menu::with_items(app, &[&capture, &record, &settings, &folder, &quit])
 }
 
 /// Only ever called from the tray's menu handler, which runs on the main
@@ -888,7 +1355,7 @@ fn open_settings(app: &AppHandle) {
     }
     let built = WebviewWindowBuilder::new(app, SETTINGS, WebviewUrl::App("settings.html".into()))
         .title("Screenshot Studio settings")
-        .inner_size(400.0, 330.0)
+        .inner_size(400.0, 440.0)
         .resizable(false)
         .maximizable(false)
         .build();
@@ -912,24 +1379,41 @@ fn build_overlay(app: &AppHandle) {
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
+        // Opaque while selecting (the page paints the frozen desktop); see-
+        // through while a recording runs, when the page is just a frame.
+        .transparent(true)
         .build();
     match built {
         Ok(_) => eprintln!("overlay window built, t+{}ms", uptime_ms()),
         Err(e) => eprintln!("overlay build: {e}"),
     }
-    // The pin too, while nobody is waiting: built on demand it costs 3-11 s
-    // (measured) between mouse-up and the preview. preview_ready keeps it
+    // The pins too, while nobody is waiting: built on demand they cost 3-11 s
+    // (measured) between mouse-up and the preview. preview_ready keeps them
     // hidden until a capture asks.
-    match pin_window(app) {
-        Ok(_) => eprintln!("pin window built, t+{}ms", uptime_ms()),
-        Err(e) => eprintln!("pin prebuild: {e}"),
+    for video in [false, true] {
+        match pin_window(app, video) {
+            Ok(_) => eprintln!("pin window built, t+{}ms", uptime_ms()),
+            Err(e) => eprintln!("pin prebuild: {e}"),
+        }
+    }
+    // And the editor, for the same reason. editor_ready keeps it hidden
+    // until a shot is opened in it.
+    let editor = WebviewWindowBuilder::new(app, EDITOR, WebviewUrl::App("editor.html".into()))
+        .title("Screenshot Studio - edit")
+        .visible(false)
+        .inner_size(900.0, 620.0)
+        .min_inner_size(640.0, 420.0)
+        .build();
+    match editor {
+        Ok(_) => eprintln!("editor window built, t+{}ms", uptime_ms()),
+        Err(e) => eprintln!("editor prebuild: {e}"),
     }
 }
 
 fn capture_off_thread(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        if let Err(e) = begin_capture(&app) {
+        if let Err(e) = begin_capture(&app, false) {
             eprintln!("capture: {e}");
         }
     });
@@ -937,7 +1421,9 @@ fn capture_off_thread(app: &AppHandle) {
 
 static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 fn uptime_ms() -> u128 {
-    T0.get_or_init(std::time::Instant::now).elapsed().as_millis()
+    T0.get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_millis()
 }
 
 pub fn run() {
@@ -962,13 +1448,19 @@ pub fn run() {
                     // Not fatal. Another app can already own the combination,
                     // and losing the hotkey is no reason to lose the tray icon
                     // along with it.
-                    if let Err(e) = app
-                        .global_shortcut()
-                        .on_shortcut(settings.hotkey.as_str(), on_hotkey)
-                    {
+                    let gs = app.global_shortcut();
+                    if let Err(e) = gs.on_shortcut(settings.hotkey.as_str(), on_hotkey) {
                         eprintln!(
                             "{} is taken, capture from the tray instead: {e}",
                             settings.hotkey
+                        );
+                    }
+                    if let Err(e) =
+                        gs.on_shortcut(settings.record_hotkey.as_str(), on_record_hotkey)
+                    {
+                        eprintln!(
+                            "{} is taken, record from the tray instead: {e}",
+                            settings.record_hotkey
                         );
                     }
                     if first_run {
@@ -1009,18 +1501,26 @@ pub fn run() {
             new_capture,
             close_preview,
             finish_capture,
+            stop_recording,
+            recording_ms,
+            open_editor,
+            edit_target,
+            editor_ready,
+            close_editor,
+            save_edited,
+            copy_edited,
             get_settings,
             set_hotkey,
             set_autostart
         ])
         .setup(|app| {
-            let hotkey = app.state::<Cfg>().0.lock().unwrap().hotkey.clone();
             TrayIconBuilder::with_id(TRAY)
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Screenshot Studio")
-                .menu(&tray_menu(app.handle(), &hotkey)?)
+                .menu(&tray_menu(app.handle())?)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "capture" => capture_off_thread(app),
+                    "record" => toggle_record(app),
                     "settings" => open_settings(app),
                     "folder" => open_shots_dir(app),
                     "quit" => app.exit(0),
@@ -1061,6 +1561,25 @@ mod tests {
 
     fn r(x: f64, y: f64, w: f64, h: f64) -> CssRect {
         CssRect { x, y, w, h }
+    }
+
+    #[test]
+    fn pins_stack_above_each_other() {
+        let corner = PhysicalPosition::new(1500, 800);
+        let size = PhysicalSize::new(400, 250);
+        // Nothing else up: the corner.
+        assert_eq!(stack_above(corner, size, None, 0, 12), corner);
+        // The other pin holds the corner: this one goes right above it,
+        // right-aligned with it.
+        let other = Some((PhysicalPosition::new(1480, 900), PhysicalSize::new(440, 156)));
+        assert_eq!(
+            stack_above(corner, size, other, 0, 12),
+            PhysicalPosition::new(1520, 638)
+        );
+        // No room above (the other pin is near the top): overlap the corner
+        // rather than leave the screen.
+        let high = Some((PhysicalPosition::new(1480, 100), PhysicalSize::new(440, 156)));
+        assert_eq!(stack_above(corner, size, high, 0, 12), corner);
     }
 
     #[test]
@@ -1107,7 +1626,10 @@ mod tests {
         let bmp = bmp_bytes(&img);
         assert_eq!(&bmp[0..2], b"BM");
         assert_eq!(bmp.len(), 54 + 8);
-        assert_eq!(u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize, bmp.len());
+        assert_eq!(
+            u32::from_le_bytes(bmp[2..6].try_into().unwrap()) as usize,
+            bmp.len()
+        );
         assert_eq!(i32::from_le_bytes(bmp[18..22].try_into().unwrap()), 2);
         // Negative height marks the rows as top-down, the order the frame is in.
         assert_eq!(i32::from_le_bytes(bmp[22..26].try_into().unwrap()), -1);
@@ -1172,8 +1694,14 @@ mod tests {
             Some((0, 1500, 1920, 120))
         );
         // A click with no drag is a dismissal, not a 0x0 screenshot.
-        assert_eq!(css_rect_to_physical(r(10., 10., 0., 0.), 1.0, 1920, 1080), None);
+        assert_eq!(
+            css_rect_to_physical(r(10., 10., 0., 0.), 1.0, 1920, 1080),
+            None
+        );
         // Entirely off the frame.
-        assert_eq!(css_rect_to_physical(r(5000., 10., 50., 50.), 1.0, 1920, 1080), None);
+        assert_eq!(
+            css_rect_to_physical(r(5000., 10., 50., 50.), 1.0, 1920, 1080),
+            None
+        );
     }
 }

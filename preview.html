@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pinned</title>
     <link rel="stylesheet" href="/src/preview.css" />
   </head>
@@ -18,31 +19,52 @@
       <button id="new" title="New shot (N)">
         <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
       </button>
+      <button id="edit" title="Annotate (E)">
+        <svg viewBox="0 0 24 24">
+          <path d="M4 20l4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z" />
+          <path d="M13.5 7.5l3 3" />
+        </svg>
+      </button>
       <button id="copy" title="Copy image to clipboard (C)">
         <svg viewBox="0 0 24 24">
           <rect x="9" y="9" width="11" height="11" rx="2" />
           <path d="M5 15V5a2 2 0 0 1 2-2h10" />
         </svg>
       </button>
+      <details class="more">
+        <summary aria-label="More actions" title="More actions"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></svg></summary>
+        <div class="more-actions">
       <button id="path" title="Copy the file path">
         <svg viewBox="0 0 24 24">
           <path d="M9.5 14.5l5-5" />
           <path d="M11 7l1.5-1.5a3.5 3.5 0 0 1 5 5L16 12" />
           <path d="M13 17l-1.5 1.5a3.5 3.5 0 0 1-5-5L8 12" />
         </svg>
+        <span>Copy file path</span>
       </button>
-      <i class="sep"></i>
       <button id="open" title="Open the shots folder">
         <svg viewBox="0 0 24 24">
           <path d="M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
         </svg>
+        <span>Open captures folder</span>
       </button>
-      <i class="sep"></i>
+        </div>
+      </details>
       <button id="close" title="Close (Esc)">
         <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" /></svg>
       </button>
     </header>
-    <img id="shot" alt="" draggable="false" title="Double right-click to close, drag into another app" />
+    <!-- The stop bar: the same window while a recording runs. -->
+    <div id="recbar" data-tauri-drag-region hidden>
+      <i class="dot"></i>
+      <span id="clock">0:00</span>
+      <span id="recdims" data-tauri-drag-region></span>
+      <button id="stop" title="Stop recording (Esc)">
+        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5" /></svg>
+      </button>
+    </div>
+    <img id="shot" alt="Captured screenshot" draggable="false" title="Double right-click to close, drag into another app" />
+    <video id="clip" autoplay muted loop playsinline draggable="false" hidden title="Double right-click to close, drag into another app"></video>
     <script type="module" src="/src/preview.ts"></script>
   </body>
 </html>

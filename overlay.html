@@ -2,6 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Select a region</title>
     <link rel="stylesheet" href="/src/overlay.css" />
   </head>
@@ -16,9 +17,11 @@
       <em id="pix"><s id="pixdot"></s><span id="pixtxt"></span></em>
     </div>
     <div id="hud" hidden></div>
+    <div id="frame" hidden></div>
+    <div id="mode"><i></i><span class="shot">Screenshot</span><span class="rec">Record</span></div>
     <div id="hint">
-      drag to select <span class="dot">·</span> <kbd>Space</kbd> moves it,
-      arrows nudge <span class="dot">·</span> <kbd>Esc</kbd> cancels
+      <span class="hint-action"><span class="shot">Drag to capture a region</span><span class="rec">Drag to frame your recording</span></span>
+      <span class="hint-keys"><span><kbd>Space</kbd> Move</span><span><kbd>↑ ↓ ← →</kbd> Nudge</span><span><kbd>Esc</kbd> Cancel</span></span>
     </div>
     <script type="module" src="/src/overlay.ts"></script>
   </body>
