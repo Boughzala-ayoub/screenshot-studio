@@ -1,9 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 
-// The annotation editor. One canvas, the shot underneath, a list of shapes on
-// top that is redrawn from scratch on every change: undo is a pop. Everything
-// is kept in image pixels; the canvas is scaled to fit by CSS and pointer
-// positions are mapped back through that scale.
+// Shapes stay in image pixels; CSS scales the canvas to fit. Keep a snapshot
+// of committed annotations so dragging only has to paint the active shape.
 
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
 const stage = document.getElementById("stage") as HTMLElement;
@@ -13,6 +11,8 @@ const dims = document.getElementById("dims") as HTMLSpanElement;
 const undoBtn = document.getElementById("undo") as HTMLButtonElement;
 const redoBtn = document.getElementById("redo") as HTMLButtonElement;
 const ctx = canvas.getContext("2d")!;
+const committed = document.createElement("canvas");
+const committedCtx = committed.getContext("2d")!;
 
 type Kind = "rect" | "ellipse" | "arrow" | "pen" | "highlight" | "text" | "number" | "pixelate";
 type Pt = { x: number; y: number };
@@ -45,7 +45,7 @@ let shapes: Shape[] = [];
 let redone: Shape[] = [];
 let live: Shape | null = null;
 let tool: Kind = "rect";
-let color = "#e6a54c";
+let color = "#ff453a";
 let size = 4;
 // Where the text tool was clicked, image pixels, while the box is open.
 let textAt: Pt | null = null;
@@ -154,11 +154,20 @@ function paint(s: Shape) {
   ctx.restore();
 }
 
-function draw() {
+let drawRequest = 0;
+function draw(rebuild = false) {
+  cancelAnimationFrame(drawRequest);
+  drawRequest = 0;
   if (!base) return;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(base, 0, 0);
-  for (const s of shapes) paint(s);
+  if (rebuild) {
+    ctx.drawImage(base, 0, 0);
+    for (const s of shapes) paint(s);
+    committedCtx.clearRect(0, 0, committed.width, committed.height);
+    committedCtx.drawImage(canvas, 0, 0);
+  } else {
+    ctx.drawImage(committed, 0, 0);
+  }
   if (live) paint(live);
 }
 
@@ -173,21 +182,21 @@ function push(s: Shape) {
   shapes.push(s);
   redone = [];
   buttons();
-  draw();
+  draw(true);
 }
 
 function undo() {
   const s = shapes.pop();
   if (s) redone.push(s);
   buttons();
-  draw();
+  draw(true);
 }
 
 function redo() {
   const s = redone.pop();
   if (s) shapes.push(s);
   buttons();
-  draw();
+  draw(true);
 }
 
 // --- pointer ----------------------------------------------------------------
@@ -231,7 +240,7 @@ canvas.addEventListener("pointermove", (e) => {
   live.x1 = p.x;
   live.y1 = p.y;
   live.points?.push(p);
-  draw();
+  drawRequest ||= requestAnimationFrame(() => draw());
 });
 
 canvas.addEventListener("pointerup", () => {
@@ -330,6 +339,7 @@ function flash(msg: string) {
 
 async function png(): Promise<Uint8Array> {
   if (!textbox.hidden) commitText();
+  if (drawRequest) draw(); // Export includes the latest sample, even before its paint.
   const blob = await new Promise<Blob>((ok, bad) =>
     canvas.toBlob((b) => (b ? ok(b) : bad(new Error("encode failed"))), "image/png"),
   );
@@ -394,10 +404,10 @@ async function load() {
   img.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
   await img.decode();
   base = img;
-  canvas.width = img.naturalWidth;
-  canvas.height = img.naturalHeight;
+  canvas.width = committed.width = img.naturalWidth;
+  canvas.height = committed.height = img.naturalHeight;
   dims.textContent = `${canvas.width} x ${canvas.height}`;
-  draw();
+  draw(true);
   document.body.classList.add("in");
   invoke("editor_ready");
 }

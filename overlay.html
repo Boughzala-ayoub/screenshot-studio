@@ -9,7 +9,17 @@
   <body>
     <img id="frozen" alt="" draggable="false" />
     <div id="dim"></div>
-    <div id="sel" hidden><i></i><b></b></div>
+    <div id="sel" hidden tabindex="-1" role="group" aria-label="Selected region" aria-describedby="record-help">
+      <i></i><b></b>
+      <button class="handle nw" data-handle="nw" aria-label="Resize top left"></button>
+      <button class="handle n" data-handle="n" aria-label="Resize top edge"></button>
+      <button class="handle ne" data-handle="ne" aria-label="Resize top right"></button>
+      <button class="handle e" data-handle="e" aria-label="Resize right edge"></button>
+      <button class="handle se" data-handle="se" aria-label="Resize bottom right"></button>
+      <button class="handle s" data-handle="s" aria-label="Resize bottom edge"></button>
+      <button class="handle sw" data-handle="sw" aria-label="Resize bottom left"></button>
+      <button class="handle w" data-handle="w" aria-label="Resize left edge"></button>
+    </div>
     <div id="vline" hidden></div>
     <div id="hline" hidden></div>
     <div id="loupe" hidden>
@@ -18,10 +28,19 @@
     </div>
     <div id="hud" hidden></div>
     <div id="frame" hidden></div>
-    <div id="mode"><i></i><span class="shot">Screenshot</span><span class="rec">Record</span></div>
+    <div id="mode"><i></i><span class="shot">Screenshot</span><span class="rec">Recording setup</span></div>
     <div id="hint">
       <span class="hint-action"><span class="shot">Drag to capture a region</span><span class="rec">Drag to frame your recording</span></span>
       <span class="hint-keys"><span><kbd>Space</kbd> Move</span><span><kbd>↑ ↓ ← →</kbd> Nudge</span><span><kbd>Esc</kbd> Cancel</span></span>
+    </div>
+    <div id="record-controls" role="group" aria-label="Recording controls" hidden>
+      <p id="record-help">Drag to move. Use handles to resize.<br /><span>Arrow keys move. Shift + arrows resize.</span></p>
+      <div class="record-actions">
+        <button id="reselect">Reselect</button>
+        <button id="cancel-record">Cancel</button>
+        <button id="start-record"><span aria-hidden="true">●</span> Record</button>
+      </div>
+      <p id="record-error" role="alert" hidden></p>
     </div>
     <script type="module" src="/src/overlay.ts"></script>
   </body>

@@ -6,6 +6,7 @@ const editBtn = document.getElementById("edit") as HTMLButtonElement;
 const recbar = document.getElementById("recbar") as HTMLDivElement;
 const clock = document.getElementById("clock") as HTMLSpanElement;
 const stopBtn = document.getElementById("stop") as HTMLButtonElement;
+const pauseBtn = document.getElementById("pause") as HTMLButtonElement;
 const dims = document.getElementById("dims") as HTMLSpanElement;
 const count = document.getElementById("count") as HTMLSpanElement;
 const older = document.getElementById("older") as HTMLButtonElement;
@@ -79,7 +80,7 @@ async function show() {
   dimsText = `${w} x ${h}`;
   dims.classList.remove("flash");
   dims.textContent = dimsText;
-  count.textContent = `${index + 1}/${shots.length}`;
+  count.textContent = `${index + 1} of ${shots.length}`;
   older.disabled = index >= shots.length - 1;
   newer.disabled = index === 0;
   // Shots are not all the same shape, so the window follows the picture rather
@@ -104,20 +105,38 @@ function stopRecording() {
   invoke("stop_recording");
 }
 
+let paused = false;
+function togglePause() {
+  invoke<boolean>("pause_recording", { on: !paused }).then((on) => {
+    paused = on;
+    document.body.classList.toggle("paused", on);
+    pauseBtn.title = on ? "Resume (Space)" : "Pause (Space)";
+    syncClock();
+  });
+}
+
+// The clock is the backend's, so a reload mid-recording stays honest, and it
+// is re-read after every pause so the frozen time and the resumed time agree.
+let t0 = 0;
+function syncClock() {
+  invoke<number>("recording_ms").then((ms) => {
+    t0 = performance.now() - ms;
+    tickClock();
+  });
+}
+function tickClock() {
+  if (paused) return;
+  const s = Math.floor((performance.now() - t0) / 1000);
+  clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
 if (recording) {
   document.body.classList.add("rec");
   recbar.hidden = false;
   stopBtn.addEventListener("click", stopRecording);
-  // The clock is the backend's, so a reload mid-recording stays honest.
-  invoke<number>("recording_ms").then((ms) => {
-    const t0 = performance.now() - ms;
-    const tick = () => {
-      const s = Math.floor((performance.now() - t0) / 1000);
-      clock.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-    };
-    tick();
-    setInterval(tick, 250);
-  });
+  pauseBtn.addEventListener("click", togglePause);
+  syncClock();
+  setInterval(tickClock, 250);
   document.body.classList.add("in");
   invoke("preview_ready");
 } else {
@@ -129,7 +148,7 @@ if (recording) {
       shots = list;
       if (shots.length) {
         await show();
-        flashDims(isVideo(current()) ? "saved" : "copied to clipboard");
+        flashDims(isVideo(current()) ? "Saved" : "Copied");
       }
     })
     .finally(() => {
@@ -229,6 +248,7 @@ addEventListener("keydown", (e) => {
   }
   if (recording) {
     if (e.key === "Escape") stopRecording();
+    else if (e.key === " ") togglePause();
     return;
   }
   if (e.key === "Escape") invoke("close_preview");

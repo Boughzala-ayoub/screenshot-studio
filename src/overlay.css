@@ -1,12 +1,8 @@
 @import "./theme.css";
 
 :root {
-  --amber: var(--accent);
-  --amber-soft: rgba(165, 180, 252, 0.65);
-  --glass: rgba(25, 28, 36, 0.96);
-  --glass-line: rgba(180, 193, 224, 0.22);
-  --shade: rgba(14, 12, 16, 0.44);
-  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
+  --guide: rgba(255, 255, 255, 0.55);
+  --shade: rgba(0, 0, 0, 0.42);
 }
 
 html,
@@ -22,32 +18,52 @@ body {
   background: #000;
   cursor: none;
   user-select: none;
-  font: 600 12px/1 var(--mono);
+  font: 500 12px/1 var(--sans);
   color: var(--text);
 }
 
-/* A recording is running: the window is see-through and this page is only
-   the frame around the region. The window itself is built transparent; the
-   black above is what makes it opaque the rest of the time. */
+/* Video setup sees the live desktop through the native transparent window. */
+body.video {
+  background: transparent;
+  cursor: crosshair;
+}
 body.live {
   background: transparent;
   cursor: default;
 }
-body.live #frozen,
+body.video #frozen,
 body.live #dim {
   display: none;
 }
 
 /* Drawn outside the region by its full width, so the recorded pixels are
    exactly the ones that were selected. The red is a recording's red; the
-   dotted white keeps it visible on any background. */
+   white keeps it visible on any background. */
 #frame {
   position: fixed;
   box-sizing: border-box;
   pointer-events: none;
-  outline: 3px solid var(--rec);
+  outline: 3px solid var(--red);
   outline-offset: 2px;
-  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.35), 0 0 0 6px rgba(0, 0, 0, 0.35);
+  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.4), 0 0 0 6px rgba(0, 0, 0, 0.4);
+}
+/* Paused: the red gives way to a dashed white, so the region is still marked
+   but plainly not being recorded. */
+body.paused #frame {
+  outline: 3px dashed rgba(255, 255, 255, 0.85);
+}
+
+/* Anything floating over the frozen desktop is the same translucent material:
+   the picture shows through, blurred, the way a Mac HUD does. */
+#mode,
+#hint,
+#record-controls,
+#hud,
+#pix {
+  background: var(--material);
+  backdrop-filter: var(--blur);
+  -webkit-backdrop-filter: var(--blur);
+  box-shadow: var(--shadow), inset 0 0 0 0.5px var(--material-line);
 }
 
 /* The mode badge, top centre: which of the two a drag is about to do. */
@@ -59,31 +75,24 @@ body.live #dim {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 14px;
-  border-radius: 9px;
-  background: var(--glass);
-  border: 1px solid var(--glass-line);
+  padding: 8px 14px;
+  border-radius: 999px;
   font: 600 12px var(--sans);
-  color: rgba(237, 233, 225, 0.85);
+  color: var(--text);
   pointer-events: none;
 }
 #mode i {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  border: 2px solid var(--amber);
+  width: 9px;
+  height: 9px;
+  border-radius: 2.5px;
+  border: 2px solid var(--text);
   box-sizing: border-box;
 }
 body.video #mode i {
   border-radius: 50%;
   border: 0;
-  background: var(--rec);
-  animation: blink 1.2s ease-in-out infinite;
-}
-@keyframes blink {
-  50% {
-    opacity: 0.35;
-  }
+  background: var(--red);
+  box-shadow: 0 0 8px rgba(255, 69, 58, 0.7);
 }
 /* Two wordings, one shown. */
 .rec {
@@ -116,12 +125,69 @@ body.live #mode {
 
 #sel {
   position: fixed;
-  outline: 1px solid rgba(255, 255, 255, 0.92);
-  box-shadow: 0 0 0 100vmax var(--shade);
+  outline: 1px solid rgba(255, 255, 255, 0.95);
+  box-shadow: 0 0 0 100vmax var(--shade), 0 0 0 1px rgba(0, 0, 0, 0.35);
 }
 
-/* Amber crop marks on the selection's corners. Drawn on the overlay, so they
-   are never part of the crop: the shot comes from the frozen frame, not from
+body.framed { cursor: default; }
+body.framed #sel { cursor: move; outline-color: var(--blue); touch-action: none; }
+.handle { display: none; }
+body.framed .handle {
+  display: grid;
+  place-items: center;
+  position: absolute;
+  width: min(20px, 100%);
+  height: min(20px, 100%);
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+.handle::after { content: ""; width: 6px; height: 6px; border: 1px solid white; border-radius: 2px; background: var(--blue); }
+.handle.nw { left: 0; top: 0; cursor: nwse-resize; }
+.handle.ne { right: 0; top: 0; cursor: nesw-resize; }
+.handle.sw { left: 0; bottom: 0; cursor: nesw-resize; }
+.handle.se { right: 0; bottom: 0; cursor: nwse-resize; }
+.handle.n { left: 50%; top: 0; transform: translateX(-50%); cursor: ns-resize; }
+.handle.s { left: 50%; bottom: 0; transform: translateX(-50%); cursor: ns-resize; }
+.handle.w { left: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.handle.e { right: 0; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.handle:focus-visible { outline: 2px solid white; outline-offset: -2px; }
+
+#record-controls {
+  position: fixed;
+  z-index: 2;
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  width: min(420px, calc(100% - 24px));
+  padding: 14px;
+  border-radius: 16px;
+  cursor: default;
+}
+#record-help { margin: 0 0 12px; line-height: 1.6; text-align: center; }
+#record-help span { color: var(--text-2); font-size: 11px; }
+.record-actions { display: flex; justify-content: center; gap: 8px; }
+.record-actions button {
+  min-width: 0;
+  flex: 1;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--material-line);
+  border-radius: 8px;
+  background: var(--fill);
+  color: var(--text);
+  font: 600 12px var(--sans);
+  cursor: pointer;
+}
+.record-actions button:hover { background: var(--fill-2); }
+.record-actions button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+#start-record { background: var(--red); border-color: transparent; color: white; }
+#start-record:hover { filter: brightness(1.1); }
+#start-record span { margin-right: 4px; }
+#record-error { margin: 10px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+
+/* Crop marks on the selection's corners. Drawn on the overlay, so they are
+   never part of the crop: the shot comes from the frozen frame, not from
    this window. */
 #sel::before,
 #sel::after,
@@ -129,9 +195,10 @@ body.live #mode {
 #sel > b {
   content: "";
   position: absolute;
-  width: 11px;
-  height: 11px;
-  border: 0 solid var(--amber);
+  width: 10px;
+  height: 10px;
+  border: 0 solid #fff;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.6));
   pointer-events: none;
 }
 #sel::before {
@@ -139,24 +206,28 @@ body.live #mode {
   top: -2px;
   border-left-width: 2px;
   border-top-width: 2px;
+  border-top-left-radius: 2px;
 }
 #sel::after {
   right: -2px;
   bottom: -2px;
   border-right-width: 2px;
   border-bottom-width: 2px;
+  border-bottom-right-radius: 2px;
 }
 #sel > i {
   right: -2px;
   top: -2px;
   border-right-width: 2px;
   border-top-width: 2px;
+  border-top-right-radius: 2px;
 }
 #sel > b {
   left: -2px;
   bottom: -2px;
   border-left-width: 2px;
   border-bottom-width: 2px;
+  border-bottom-left-radius: 2px;
 }
 
 /* Full-height and full-width guides. The cursor is hidden, so these are what
@@ -164,7 +235,7 @@ body.live #mode {
 #vline,
 #hline {
   position: fixed;
-  background: var(--amber-soft);
+  background: var(--guide);
   pointer-events: none;
 }
 #vline {
@@ -185,9 +256,8 @@ body.live #mode {
   position: fixed;
   width: 132px;
   height: 132px;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 244, 225, 0.45);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55);
+  border-radius: 14px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.35), var(--shadow);
   background-repeat: no-repeat;
   image-rendering: pixelated;
   pointer-events: none;
@@ -197,7 +267,7 @@ body.live #mode {
 #loupe i,
 #loupe b {
   position: absolute;
-  background: var(--amber-soft);
+  background: rgba(10, 132, 255, 0.55);
 }
 #loupe i {
   left: 50%;
@@ -219,37 +289,34 @@ body.live #mode {
 #pix {
   position: absolute;
   left: 50%;
-  bottom: 12px;
+  bottom: 10px;
   transform: translateX(-50%);
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   padding: 3px 8px;
   border-radius: 999px;
-  background: var(--glass);
+  font: 500 10.5px var(--mono);
   font-style: normal;
-  font-size: 10px;
-  letter-spacing: 0.05em;
 }
 #pix s {
-  width: 8px;
-  height: 8px;
-  border-radius: 2px;
-  border: 1px solid rgba(255, 244, 225, 0.45);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.4);
   text-decoration: none;
 }
 
 #hud {
   position: fixed;
   padding: 5px 9px;
-  border-radius: 6px;
-  background: var(--glass);
-  border: 1px solid var(--glass-line);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-  letter-spacing: 0.03em;
+  border-radius: 7px;
+  font: 500 12px var(--sans);
+  font-variant-numeric: tabular-nums;
   pointer-events: none;
 }
 
+/* The key legend, bottom centre: the capture toolbar's floating pill. */
 #hint {
   position: fixed;
   left: 50%;
@@ -258,30 +325,22 @@ body.live #mode {
   display: flex;
   align-items: center;
   gap: 18px;
-  padding: 12px 16px;
-  border-radius: 12px;
-  background: var(--glass);
-  border: 1px solid var(--glass-line);
-  font: 400 12px "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  color: rgba(237, 233, 225, 0.85);
-  letter-spacing: 0.02em;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font: 400 12px var(--sans);
+  color: var(--text-2);
   pointer-events: none;
   transition: opacity 0.15s;
 }
 #hint kbd {
-  padding: 2px 7px;
-  border-radius: 5px;
-  background: rgba(255, 244, 225, 0.1);
-  border: 1px solid rgba(255, 244, 225, 0.16);
-  font: 500 10.5px var(--mono);
-  color: var(--text);
+  margin-right: 1px;
 }
 .hint-action { white-space: nowrap; font-weight: 600; color: var(--text); }
-.hint-keys { display: flex; gap: 12px; white-space: nowrap; }
+.hint-keys { display: flex; gap: 14px; white-space: nowrap; }
 @media (max-width: 680px) {
-  #hint { box-sizing: border-box; width: max-content; max-width: calc(100% - 24px); flex-direction: column; gap: 10px; padding: 12px; }
+  #hint { box-sizing: border-box; width: max-content; max-width: calc(100% - 24px); flex-direction: column; gap: 10px; padding: 12px 16px; border-radius: 16px; }
   .hint-keys { gap: 10px; font-size: 11px; }
-  #hint kbd { padding: 2px 4px; font-size: 10px; }
+  #hint kbd { padding: 1px 4px; font-size: 10px; }
 }
 
 [hidden] {

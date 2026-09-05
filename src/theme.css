@@ -1,23 +1,62 @@
+/* One dark HUD palette, in the manner of macOS: near-black surfaces lifted
+   with translucent white rather than lighter greys, hairline separators,
+   the system blue as the only accent, and the system reds and greens for
+   what they mean. Named for their role, not their value. */
 :root {
   color-scheme: dark;
-  --ink: #15171d;
-  --raised: #20232c;
-  --well: #101217;
-  --line: #303440;
-  --text: #eef0f6;
-  --muted: #a0a7b8;
-  --accent: #a5b4fc;
-  --accent-soft: #2c334c;
-  --rec: #f27683;
-  --mono: "Cascadia Mono", ui-monospace, Consolas, monospace;
-  --sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --bg: #1e1e1e;            /* window body */
+  --bar: #2a2a2a;           /* title bars and toolbars */
+  --well: #161616;          /* where the picture sits */
+  --hair: rgba(255, 255, 255, 0.08);
+  --hair-2: rgba(255, 255, 255, 0.14);
+  --fill: rgba(255, 255, 255, 0.07);   /* resting control */
+  --fill-2: rgba(255, 255, 255, 0.12); /* hovered / selected control */
+  --text: rgba(255, 255, 255, 0.9);
+  --text-2: rgba(255, 255, 255, 0.55);
+  --text-3: rgba(255, 255, 255, 0.3);
+  --blue: #0a84ff;
+  --blue-2: #2f97ff;
+  --red: #ff453a;
+  --green: #30d158;
+  /* Translucent material for anything floating over a picture. */
+  --material: rgba(36, 36, 38, 0.72);
+  --material-line: rgba(255, 255, 255, 0.14);
+  --blur: blur(22px) saturate(170%);
+  --shadow: 0 0 0 0.5px rgba(0, 0, 0, 0.7), 0 10px 32px rgba(0, 0, 0, 0.45);
+  --r-window: 10px;
+  --r-panel: 12px;
+  --r-control: 6px;
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  /* Kept for the scripts' sake: these names are what the pages already use. */
+  --accent: var(--blue);
+  --rec: var(--red);
+  --ink: var(--bg);
+  --raised: var(--bar);
+  --line: var(--hair);
+  --muted: var(--text-2);
 }
 
 button, input { font: inherit; }
 button:focus-visible, summary:focus-visible, [tabindex]:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline: 3px solid rgba(10, 132, 255, 0.55);
+  outline-offset: 1px;
 }
+
+/* A keycap the way the system draws one: rounded, faintly raised, in the
+   text face rather than a monospace. */
+kbd {
+  display: inline-block;
+  min-width: 14px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--fill-2);
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.35), 0 0 0 0.5px rgba(255, 255, 255, 0.08);
+  font: 500 10.5px/1.5 var(--sans);
+  color: var(--text);
+  text-align: center;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation: none !important;

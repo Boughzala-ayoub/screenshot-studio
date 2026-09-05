@@ -38,9 +38,8 @@ const PREVIEW_MAX: f64 = 420.0;
 /// preview.css, which reserves the same strip.
 const PREVIEW_BAR: f64 = 32.0;
 /// The pin while it is the recording's stop bar, logical pixels.
-const REC_BAR: (f64, f64) = (168.0, 36.0);
-/// How many stills survive in the folder. Older ones are deleted after each
-/// capture, so the folder never grows without asking. Recordings are kept.
+const REC_BAR: (f64, f64) = (196.0, 36.0);
+/// How many files of each kind survive in the folder.
 const KEEP_SHOTS: usize = 5;
 
 /// Where a recording's pin goes once it stops, remembered from the start.
@@ -287,16 +286,19 @@ fn is_shot_name(path: &Path) -> bool {
         .is_some_and(|n| n.starts_with("shot-") && (n.ends_with(".png") || n.ends_with(".mp4")))
 }
 
-/// Trim the folder to the newest `keep` stills. Recordings are never pruned:
-/// a ten-minute video is not something five quick screenshots should delete.
+/// Keep the newest `keep` screenshots and recordings independently.
 fn prune_shots(dir: &Path, keep: usize) {
-    let stills = list_shots(dir)
-        .into_iter()
-        .filter(|(_, p)| p.extension().is_some_and(|e| e == "png"))
-        .collect();
-    for path in stale_shots(stills, keep) {
-        if let Err(e) = std::fs::remove_file(&path) {
-            eprintln!("prune {}: {e}", path.display());
+    let shots = list_shots(dir);
+    for ext in ["png", "mp4"] {
+        let matching = shots
+            .iter()
+            .filter(|(_, p)| p.extension().is_some_and(|e| e == ext))
+            .cloned()
+            .collect();
+        for path in stale_shots(matching, keep) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                eprintln!("prune {}: {e}", path.display());
+            }
         }
     }
 }
@@ -421,10 +423,8 @@ fn fresh_shot_path(dir: &Path, ext: &str) -> PathBuf {
     path
 }
 
-/// Freeze every monitor into one frame and hand it to the standing overlay by
-/// bumping the capture generation, so a selection can start on one screen and
-/// end on another. Safe to call from any thread: nothing here touches a window.
-/// `video`: the selection starts a recording instead of taking a still.
+/// Prepare the desktop bounds for selection and freeze pixels only for stills.
+/// Video setup looks through the transparent overlay until Record is pressed.
 fn begin_capture(app: &AppHandle, video: bool) -> Result<(), String> {
     let visible = app
         .get_webview_window(OVERLAY)
@@ -452,7 +452,9 @@ fn begin_capture(app: &AppHandle, video: bool) -> Result<(), String> {
     // Each screen is grabbed on its own thread: the copies are independent
     // BitBlts, and with two or three monitors the wait is the slowest screen
     // rather than the sum of all of them. One screen skips the threads.
-    let grabs: Vec<(i32, i32, Result<RgbaImage, xcap::XCapError>)> = if monitors.len() == 1 {
+    let grabs: Vec<(i32, i32, Result<RgbaImage, xcap::XCapError>)> = if video {
+        Vec::new()
+    } else if monitors.len() == 1 {
         let (mx, my, mw, mh) = monitors[0];
         let shot = xcap::Monitor::from_point(mx + mw as i32 / 2, my + mh as i32 / 2)
             .and_then(|m| m.capture_image());
@@ -490,11 +492,13 @@ fn begin_capture(app: &AppHandle, video: bool) -> Result<(), String> {
             Err(e) => eprintln!("monitor at {mx},{my}: {e}"),
         }
     }
-    let frame = frame.ok_or("no screen could be read")?;
-    let bmp = bmp_bytes(&frame);
+    if !video && frame.is_none() {
+        return Err("no screen could be read".into());
+    }
+    let bmp = frame.as_ref().map(bmp_bytes).unwrap_or_default();
 
     let state = app.state::<Shot>();
-    *state.frame.lock().unwrap() = Some(frame);
+    *state.frame.lock().unwrap() = frame;
     *state.origin.lock().unwrap() = (vx, vy);
     *state.frame_bmp.lock().unwrap() = bmp;
 
@@ -578,6 +582,21 @@ fn overlay_ready(app: AppHandle, state: State<Shot>) {
     }
     let _ = w.show();
     let _ = w.set_focus();
+    // Chromium treats a screen-sized ordinary window as occluding the browser,
+    // even when WebView2 paints it transparent. A tool window keeps the browser
+    // underneath drawing while the user selects and resizes the video region.
+    // Apply after show/focus: Tao reapplies the window styles when showing it.
+    #[cfg(target_os = "windows")]
+    if let Ok(hwnd) = w.hwnd() {
+        use windows::Win32::UI::WindowsAndMessaging::{
+            GetWindowLongW, SetWindowLongW, GWL_EXSTYLE, WS_EX_TOOLWINDOW,
+        };
+        let hwnd = windows::Win32::Foundation::HWND(hwnd.0 as isize);
+        unsafe {
+            let style = GetWindowLongW(hwnd, GWL_EXSTYLE);
+            SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as i32);
+        }
+    }
 }
 
 #[tauri::command]
@@ -762,12 +781,9 @@ fn finish_capture(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<S
 fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<String, String> {
     let overlay = app.get_webview_window(OVERLAY).ok_or("overlay is gone")?;
     let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
-    let (fw, fh) = {
-        let guard = state.frame.lock().unwrap();
-        let frame = guard.as_ref().ok_or("nothing captured")?;
-        frame.dimensions()
-    };
-    let (x, y, w, h) = css_rect_to_physical(rect, scale, fw, fh).ok_or("empty selection")?;
+    let size = state.bounds.lock().unwrap().1;
+    let (x, y, w, h) =
+        css_rect_to_physical(rect, scale, size.width, size.height).ok_or("empty selection")?;
     let origin = *state.origin.lock().unwrap();
     let (dx, dy) = (origin.0 + x as i32, origin.1 + y as i32); // desktop coordinates
     let centre = (dx + w as i32 / 2, dy + h as i32 / 2);
@@ -886,7 +902,8 @@ fn stop_recording(app: AppHandle, state: State<Shot>) -> Result<(), String> {
     )
 }
 
-/// How long the recording has been running, for the stop bar's clock.
+/// How long the recording has been running, pauses excluded, for the stop
+/// bar's clock.
 #[tauri::command]
 fn recording_ms(state: State<Shot>) -> u64 {
     state
@@ -894,7 +911,23 @@ fn recording_ms(state: State<Shot>) -> u64 {
         .lock()
         .unwrap()
         .as_ref()
-        .map_or(0, |(r, _)| r.started.elapsed().as_millis() as u64)
+        .map_or(0, |(r, _)| r.elapsed().as_millis() as u64)
+}
+
+/// Pause or resume the recording from the stop bar. The frame around the
+/// region shows the state too, since the bar may be on another monitor.
+#[tauri::command]
+fn pause_recording(app: AppHandle, state: State<Shot>, on: bool) -> bool {
+    let guard = state.recording.lock().unwrap();
+    let Some((rec, _)) = guard.as_ref() else {
+        return false;
+    };
+    rec.set_paused(on);
+    let paused = rec.paused();
+    if let Some(w) = app.get_webview_window(OVERLAY) {
+        let _ = w.eval(&format!("recPaused({paused})"));
+    }
+    paused
 }
 
 /// The record hotkey toggles: press to frame, press again to stop.
@@ -1379,8 +1412,7 @@ fn build_overlay(app: &AppHandle) {
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        // Opaque while selecting (the page paints the frozen desktop); see-
-        // through while a recording runs, when the page is just a frame.
+        // The page paints a frozen still or shows the live desktop for video.
         .transparent(true)
         .build();
     match built {
@@ -1503,6 +1535,7 @@ pub fn run() {
             finish_capture,
             stop_recording,
             recording_ms,
+            pause_recording,
             open_editor,
             edit_target,
             editor_ready,
@@ -1514,6 +1547,7 @@ pub fn run() {
             set_autostart
         ])
         .setup(|app| {
+            prune_shots(&shots_dir(app.handle())?, KEEP_SHOTS);
             TrayIconBuilder::with_id(TRAY)
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Screenshot Studio")
@@ -1580,6 +1614,44 @@ mod tests {
         // rather than leave the screen.
         let high = Some((PhysicalPosition::new(1480, 100), PhysicalSize::new(440, 156)));
         assert_eq!(stack_above(corner, size, high, 0, 12), corner);
+    }
+
+    #[test]
+    fn prunes_screenshots_and_videos_separately_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "ss-retention-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        for ext in ["png", "mp4"] {
+            for n in 1..=7 {
+                let file = std::fs::File::create(dir.join(format!("shot-{n}.{ext}"))).unwrap();
+                file.set_modified(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(n * 10))
+                    .unwrap();
+            }
+        }
+        std::fs::write(dir.join("personal.mp4"), b"keep").unwrap();
+
+        prune_shots(&dir, KEEP_SHOTS);
+        let mut remaining: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        for name in &remaining {
+            std::fs::remove_file(dir.join(name)).unwrap();
+        }
+        std::fs::remove_dir(&dir).unwrap();
+        remaining.sort();
+        let mut expected = vec!["personal.mp4".to_owned()];
+        for n in 3..=7 {
+            expected.push(format!("shot-{n}.mp4"));
+            expected.push(format!("shot-{n}.png"));
+        }
+        assert_eq!(remaining, expected);
     }
 
     #[test]

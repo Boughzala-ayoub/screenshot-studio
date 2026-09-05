@@ -1,38 +1,83 @@
 @import "./theme.css";
 
+/* The System Settings idiom: a grouped form. Rounded inset cards, one row per
+   setting, the label on the left and the control on the right, hairlines
+   between rows, and the small print underneath. */
 * { box-sizing: border-box; }
-html { min-height: 100%; background: var(--ink); }
-body { margin: 0; color: var(--text); font: 13px/1.5 var(--sans); }
-main { max-width: 560px; margin: 0 auto; padding: 16px 20px 8px; }
-.brand { display: flex; align-items: center; gap: 11px; font-weight: 600; }
-.brand span:not(.brand-mark) { display: block; color: var(--muted); font-size: 11px; font-weight: 400; }
-.brand-mark { position: relative; width: 33px; height: 33px; border: 1px solid #505c86; border-radius: 10px; background: var(--accent-soft); flex: none; }
-.brand-mark::before, .brand-mark::after { content: ""; position: absolute; width: 9px; height: 9px; border: 0 solid var(--accent); }
-.brand-mark::before { top: 8px; left: 8px; border-top-width: 2px; border-left-width: 2px; }
-.brand-mark::after { bottom: 8px; right: 8px; border-bottom-width: 2px; border-right-width: 2px; }
-.intro { margin: 14px 0 12px; }
-h1 { margin: 0; font-size: 25px; line-height: 1.2; letter-spacing: -0.7px; font-weight: 600; }
-.intro p { margin: 5px 0 0; color: var(--muted); font-size: 12px; }
-section { padding: 8px 0; border-top: 1px solid var(--line); }
-.section-title, .row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-h2 { margin: 0; font-size: 13px; font-weight: 600; }
-.format { color: var(--muted); font-size: 10px; white-space: nowrap; }
-.hint { margin: 4px 0 0; color: var(--muted); font-size: 11px; line-height: 1.4; }
-.recorder { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-height: 36px; margin-top: 7px; padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--raised); cursor: pointer; }
-.recorder:hover { border-color: #606b87; }
-.recorder:focus { outline: 2px solid var(--accent); outline-offset: 2px; color: var(--accent); }
-.recorder kbd { padding: 2px 8px; border: 1px solid #414654; border-bottom-width: 2px; border-radius: 4px; background: #2c303b; font: 500 11px/1.5 var(--sans); color: var(--text); }
-.row > div { min-width: 0; }
-.switch { position: relative; flex: 0 0 36px; height: 22px; cursor: pointer; }
-.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; }
-.switch i { position: absolute; inset: 0; border-radius: 20px; background: #3a3f4d; pointer-events: none; }
-.switch i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text); transition: transform 0.15s; }
-.switch input:checked + i { background: var(--accent); }
-.switch input:checked + i::after { transform: translateX(14px); background: #20263d; }
-.switch input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 3px; }
-#shortcut-help { border-top: 1px solid var(--line); padding-top: 9px; font-size: 10px; }
-#status { margin: 3px 0 0; font-size: 11px; overflow-wrap: anywhere; }
-#status.ok { color: var(--accent); }
-#status.err { color: var(--rec); }
-@media (min-width: 600px) { main { padding-top: 48px; } .intro { margin: 30px 0 24px; } section { padding: 20px 0; } }
-@media (max-width: 350px) { main { padding: 16px; } }
+html { min-height: 100%; background: var(--bg); }
+body { margin: 0; color: var(--text); font: 13px/1.45 var(--sans); }
+main { max-width: 480px; margin: 0 auto; padding: 18px 20px 14px; }
+
+.brand { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+h1 { margin: 0; font-size: 15px; line-height: 1.25; font-weight: 600; letter-spacing: -0.01em; }
+.brand div > span { display: block; color: var(--text-2); font-size: 11.5px; }
+/* The app icon: a blue squircle with the viewfinder marks. */
+.brand-mark {
+  position: relative;
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: linear-gradient(160deg, #4aa3ff, #0a5fd6);
+  box-shadow: inset 0 0.5px 0 rgba(255, 255, 255, 0.45), 0 2px 6px rgba(0, 0, 0, 0.4);
+}
+.brand-mark::before, .brand-mark::after { content: ""; position: absolute; width: 11px; height: 11px; border: 0 solid #fff; }
+.brand-mark::before { top: 10px; left: 10px; border-top-width: 2.5px; border-left-width: 2.5px; border-radius: 2px 0 0 0; }
+.brand-mark::after { bottom: 10px; right: 10px; border-bottom-width: 2.5px; border-right-width: 2.5px; border-radius: 0 0 2px 0; }
+
+h2 { margin: 0 0 6px 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-2); }
+h2:not(:first-of-type) { margin-top: 16px; }
+
+.card {
+  border-radius: var(--r-panel);
+  background: var(--fill);
+  box-shadow: inset 0 0 0 1px var(--hair);
+}
+.row { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; }
+.row + .row { border-top: 1px solid var(--hair); }
+.row > div:first-child { min-width: 0; flex: 1 1 auto; }
+.label { display: block; font-weight: 500; }
+.hint { margin: 1px 0 0; color: var(--text-2); font-size: 11px; line-height: 1.4; }
+.footnote { margin: 7px 10px 0; }
+
+/* The shortcut field: a rounded well holding the chord as keycaps. Focus it
+   and it listens for the next combination. */
+.recorder {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 118px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 1px var(--hair-2);
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  transition: box-shadow 0.12s;
+}
+.recorder:hover { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.24); }
+.recorder:focus { outline: none; box-shadow: inset 0 0 0 1px var(--blue), 0 0 0 3px rgba(10, 132, 255, 0.35); color: var(--text); }
+.recorder kbd { font-size: 11px; padding: 2px 6px; }
+
+/* The switch, in the system blue when on. */
+.switch { position: relative; flex: 0 0 38px; height: 22px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.switch i { position: absolute; inset: 0; border-radius: 22px; background: rgba(255, 255, 255, 0.16); box-shadow: inset 0 0 0 0.5px rgba(255, 255, 255, 0.1); pointer-events: none; transition: background 0.18s; }
+.switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45), 0 0 0 0.5px rgba(0, 0, 0, 0.15); transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1); }
+.switch input:checked + i { background: var(--blue); }
+.switch input:checked + i::after { transform: translateX(16px); }
+.switch input:focus-visible + i { outline: 3px solid rgba(10, 132, 255, 0.55); outline-offset: 2px; }
+
+#status { margin: 12px 10px 0; min-height: 1.4em; font-size: 11px; overflow-wrap: anywhere; }
+#status.ok { color: var(--green); }
+#status.err { color: var(--red); }
+
+@media (max-width: 350px) {
+  main { padding: 14px 12px; }
+  .row.shortcut { flex-wrap: wrap; }
+  .row.shortcut .recorder { flex: 1 1 100%; }
+}

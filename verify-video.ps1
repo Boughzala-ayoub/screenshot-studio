@@ -72,6 +72,10 @@ try {
     Check (@($up | Where-Object Title -like '*select a region*').Count -eq 1) "the record hotkey raised the overlay"
 
     Drag-Select $X1 $Y1 $X2 $Y2
+    Start-Sleep -Milliseconds 300
+    $startedEarly = @(Get-ChildItem $OutDir -Filter *.mp4 -EA 0 | Where-Object { $beforeMp4 -notcontains $_.FullName })
+    Check ($startedEarly.Count -eq 0) "selecting the region waits for Record"
+    Press-Chord @(0x0D) # Enter explicitly confirms the prepared region.
     $bar = Wait-Window $app.Id '*pinned video*'
     $pin = @($bar | Where-Object Title -like '*pinned video*')
     Check ($pin.Count -eq 1) "the stop bar appeared (saw: $(($bar.Title) -join ', '))"
@@ -136,6 +140,7 @@ try {
             $again = Wait-Window $app.Id '*select a region*'
             Check (@($again | Where-Object Title -like '*select a region*').Count -eq 1) "N on the video pin raised the overlay"
             Drag-Select $X1 $Y1 $X2 $Y2
+            Press-Chord @(0x0D)
             $bar2 = Wait-Window $app.Id '*pinned video*'
             $vp2 = @($bar2 | Where-Object Title -like '*pinned video*')
             $r2 = New-Object W32.Input+RECT

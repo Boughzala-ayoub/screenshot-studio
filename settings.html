@@ -8,29 +8,44 @@
   </head>
   <body>
     <main>
-      <header class="brand"><span class="brand-mark" aria-hidden="true"></span><div>Screenshot Studio<span>Capture. Annotate. Share.</span></div></header>
-      <div class="intro"><h1>Capture settings</h1><p>Your shortcuts, ready whenever you need them.</p></div>
-      <section class="shortcut">
-        <div class="section-title"><h2>Screenshot</h2><span class="format">PNG</span></div>
-        <div id="recorder" class="recorder" role="button" aria-label="Change screenshot shortcut" aria-describedby="shortcut-help" tabindex="0" title="Click, then press the new shortcut">…</div>
-        <p class="hint">Capture a region and copy it to your clipboard.</p>
-      </section>
-      <section class="shortcut">
-        <div class="section-title"><h2>Screen recording</h2><span class="format">MP4 · No audio</span></div>
-        <div id="recorder-video" class="recorder" role="button" aria-label="Change recording shortcut" aria-describedby="shortcut-help" tabindex="0" title="Click, then press the new shortcut">…</div>
-        <p class="hint">Press to select a region. Press again to stop.</p>
-      </section>
-      <section class="row">
-        <div>
-          <h2 id="autostart-label">Start with Windows</h2>
-          <p class="hint">Ready for your first capture when you log in.</p>
+      <header class="brand">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <div><h1>Screenshot Studio</h1><span>Capture. Annotate. Share.</span></div>
+      </header>
+
+      <h2>Shortcuts</h2>
+      <section class="card">
+        <div class="row shortcut">
+          <div>
+            <span class="label">Screenshot</span>
+            <p class="hint">Capture a region and copy it to your clipboard. Saved as PNG.</p>
+          </div>
+          <div id="recorder" class="recorder" role="button" aria-label="Change screenshot shortcut" aria-describedby="shortcut-help" tabindex="0" title="Click, then press the new shortcut">…</div>
         </div>
-        <label class="switch">
-          <input type="checkbox" id="autostart" aria-labelledby="autostart-label" />
-          <i></i>
-        </label>
+        <div class="row shortcut">
+          <div>
+            <span class="label">Screen recording</span>
+            <p class="hint">Press to select a region, press again to stop. MP4, no audio.</p>
+          </div>
+          <div id="recorder-video" class="recorder" role="button" aria-label="Change recording shortcut" aria-describedby="shortcut-help" tabindex="0" title="Click, then press the new shortcut">…</div>
+        </div>
       </section>
-      <p id="shortcut-help" class="hint">Click a shortcut, then press Ctrl, Alt or Shift with a key. Esc cancels. Changes save automatically.</p>
+      <p id="shortcut-help" class="hint footnote">Click a shortcut, then press Ctrl, Alt or Shift with a key. Esc cancels. Changes save automatically.</p>
+
+      <h2>General</h2>
+      <section class="card">
+        <div class="row">
+          <div>
+            <span class="label" id="autostart-label">Start with Windows</span>
+            <p class="hint">Ready for your first capture when you log in.</p>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="autostart" aria-labelledby="autostart-label" />
+            <i></i>
+          </label>
+        </div>
+      </section>
+
       <p id="status" role="status" aria-live="polite"></p>
     </main>
     <script type="module" src="/src/settings.ts"></script>
