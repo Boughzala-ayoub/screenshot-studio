@@ -21,7 +21,7 @@ const PORT = process.env.PORT || "4173";
 const ORIGIN = `http://localhost:${PORT}`;
 const URL_ = `${ORIGIN}/overlay.html`;
 const CDP_PORT = 9333;
-const WIDTHS = [320, 375, 768, 1024, 1280, 1920];
+const WIDTHS = [320, 375, 441, 768, 1024, 1280, 1920];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const kids = [];
@@ -85,9 +85,17 @@ class Cdp {
 
 // Everything the overlay touches of the Tauri bridge, recorded instead of sent.
 const STUB = `window.__TAURI_INTERNALS__ = {
+  metadata: { currentWindow: { label: 'overlay' } },
   convertFileSrc() { return window.__videoUrl; },
   invoke(cmd, args) {
     (window.__calls ||= []).push({ cmd, args });
+    if (cmd === 'plugin:window|scale_factor') return Promise.resolve(window.__scale || 1);
+    if (cmd === 'plugin:window|inner_position') return Promise.resolve(window.__origin || { x: 0, y: 0 });
+    if (cmd === 'plugin:window|available_monitors') return window.__failMonitor
+      ? Promise.reject(new Error('Monitor unavailable'))
+      : Promise.resolve(window.__monitors || [{ name: 'Screen', position: { x: 0, y: 0 },
+          size: { width: innerWidth, height: innerHeight }, scaleFactor: 1 }])
+          .then(ms => ms.map(m => ({ ...m, workArea: { position: m.position, size: m.size } })));
     if (cmd === "finish_capture") {
       window.__setupHiddenAtStart = document.getElementById('record-controls').hidden &&
         getComputedStyle(document.getElementById('frozen')).display === 'none';
@@ -489,6 +497,15 @@ async function main() {
       await auditState("selection");
       if (page.includes("video")) {
         await auditState("record-setup");
+        await read("document.querySelector('#record-controls [data-fullscreen]').click()");
+        await waitFor("full screen selection", () => read("document.getElementById('sel').offsetWidth === innerWidth"));
+        if (!await read("(({x,y,width,height}) => x === 0 && y === 0 && width === innerWidth && height === innerHeight)(document.getElementById('sel').getBoundingClientRect())"))
+          fail("Full screen must select the entire monitor");
+        await auditState("full-screen");
+        await read("document.getElementById('reselect').click()");
+        const fullButton = await read("document.querySelector('#hint [data-fullscreen]').getBoundingClientRect().toJSON()");
+        await drag([[fullButton.x + fullButton.width / 2, fullButton.y + fullButton.height / 2]]);
+        await waitFor("full screen from hint", () => read("!document.getElementById('record-controls').hidden"));
         if (await read("window.__calls.some(c => c.cmd === 'finish_capture')")) fail("responsive setup started recording before confirmation");
         await read("window.__failRecord = true; document.getElementById('start-record').click()");
         await waitFor("responsive record error", () => read("!document.getElementById('record-error').hidden"));
@@ -497,10 +514,26 @@ async function main() {
         await read("document.getElementById('sel').focus()");
         await s("Input.dispatchKeyEvent", { type: "keyDown", key: "Enter", code: "Enter" });
         await waitFor("keyboard record start", () => read("window.__calls.filter(c => c.cmd === 'finish_capture').length === 2"));
+        if (!await read("window.__calls.filter(c => c.cmd === 'finish_capture').every(c => c.args.rect.x === 0 && c.args.rect.y === 0 && c.args.rect.w === innerWidth && c.args.rect.h === innerHeight)"))
+          fail("Record must send the full monitor rectangle");
         await auditState("recording-frame");
       }
     }
   }
+
+  await read("recDone(); window.__scale = 1.5; window.__origin = { x: -960, y: -300 }; window.__monitors = [" +
+    "{ name: 'Left', position: { x: -960, y: -300 }, size: { width: 960, height: 1050 }, scaleFactor: 1 }," +
+    "{ name: 'Right', position: { x: 0, y: 0 }, size: { width: 960, height: 750 }, scaleFactor: 1.5 }]");
+  await drag([[645, 220], [675, 300]]);
+  await read("document.querySelector('#record-controls [data-fullscreen]').click()");
+  await waitFor("scaled monitor selection", () => read("document.getElementById('sel').offsetWidth === 640"));
+  const scaled = await read("(({x,y,width,height}) => [x,y,width,height])(document.getElementById('sel').getBoundingClientRect())");
+  if (JSON.stringify(scaled) !== JSON.stringify([640, 200, 640, 500])) fail(`scaled monitor bounds: ${JSON.stringify(scaled)}`);
+  else pass("Full screen selects the region's monitor with negative desktop origins and mixed DPI");
+  await read("recDone(); window.__failMonitor = true; document.querySelector('#hint [data-fullscreen]').click()");
+  await waitFor("monitor error", () => read("document.getElementById('hud').textContent.includes('Monitor unavailable')"));
+  if (!await read("!document.querySelector('#hint [data-fullscreen]').disabled && document.getElementById('record-controls').hidden"))
+    fail("monitor lookup failure must allow retry without starting a recording");
 
   // --- the stop bar --------------------------------------------------------
   await s("Emulation.setDeviceMetricsOverride", {

@@ -31,11 +31,13 @@
     <div id="mode"><i></i><span class="shot">Screenshot</span><span class="rec">Recording setup</span></div>
     <div id="hint">
       <span class="hint-action"><span class="shot">Drag to capture a region</span><span class="rec">Drag to frame your recording</span></span>
+      <button class="rec" data-fullscreen>Full screen</button>
       <span class="hint-keys"><span><kbd>Space</kbd> Move</span><span><kbd>↑ ↓ ← →</kbd> Nudge</span><span><kbd>Esc</kbd> Cancel</span></span>
     </div>
     <div id="record-controls" role="group" aria-label="Recording controls" hidden>
       <p id="record-help">Drag to move. Use handles to resize.<br /><span>Arrow keys move. Shift + arrows resize.</span></p>
       <div class="record-actions">
+        <button data-fullscreen>Full screen</button>
         <button id="reselect">Reselect</button>
         <button id="cancel-record">Cancel</button>
         <button id="start-record"><span aria-hidden="true">●</span> Record</button>

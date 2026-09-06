@@ -166,8 +166,9 @@ body.framed .handle {
 }
 #record-help { margin: 0 0 12px; line-height: 1.6; text-align: center; }
 #record-help span { color: var(--text-2); font-size: 11px; }
-.record-actions { display: flex; justify-content: center; gap: 8px; }
-.record-actions button {
+.record-actions { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+.record-actions button,
+#hint button {
   min-width: 0;
   flex: 1;
   height: 34px;
@@ -178,9 +179,14 @@ body.framed .handle {
   color: var(--text);
   font: 600 12px var(--sans);
   cursor: pointer;
+  white-space: nowrap;
 }
-.record-actions button:hover { background: var(--fill-2); }
-.record-actions button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+.record-actions button:hover, #hint button:hover { background: var(--fill-2); }
+.record-actions button:focus-visible, #hint button:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+#hint button { pointer-events: auto; flex: none; }
+@media (max-width: 440px) {
+  .record-actions { grid-template-columns: repeat(2, 1fr); }
+}
 #start-record { background: var(--red); border-color: transparent; color: white; }
 #start-record:hover { filter: brightness(1.1); }
 #start-record span { margin-right: 4px; }

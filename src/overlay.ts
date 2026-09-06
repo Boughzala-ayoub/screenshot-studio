@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { availableMonitors, getCurrentWindow } from "@tauri-apps/api/window";
 
 const frozen = document.getElementById("frozen") as HTMLImageElement;
 const dim = document.getElementById("dim") as HTMLDivElement;
@@ -231,13 +232,37 @@ async function startRecording() {
 }
 
 recordButton.addEventListener("click", startRecording);
+document.querySelectorAll<HTMLButtonElement>("[data-fullscreen]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    if (!isVideo() || starting || start || adjustment || document.body.classList.contains("live")) return;
+    button.disabled = true;
+    try {
+      const win = getCurrentWindow();
+      const [monitors, origin, scale] = await Promise.all([availableMonitors(), win.innerPosition(), win.scaleFactor()]);
+      if (starting || start || adjustment || document.body.classList.contains("live")) return;
+      const target = selection || button.getBoundingClientRect();
+      const x = origin.x + (target.x + ("w" in target ? target.w : target.width) / 2) * scale;
+      const y = origin.y + (target.y + ("h" in target ? target.h : target.height) / 2) * scale;
+      const monitor = monitors.find((m) => x >= m.position.x && x < m.position.x + m.size.width
+        && y >= m.position.y && y < m.position.y + m.size.height) || monitors[0];
+      if (!monitor) throw new Error("No monitor available");
+      select({ x: (monitor.position.x - origin.x) / scale, y: (monitor.position.y - origin.y) / scale,
+        w: monitor.size.width / scale, h: monitor.size.height / scale });
+      recordButton.focus();
+    } catch (err) {
+      readout(String(err), 12, 60);
+    } finally {
+      button.disabled = false;
+    }
+  });
+});
 document.getElementById("reselect")!.addEventListener("click", reset);
 document.getElementById("cancel-record")!.addEventListener("click", () => invoke("cancel_capture"));
 
 addEventListener("pointerdown", (e) => {
   if (e.button !== 0 || starting || document.body.classList.contains("live")) return;
   const target = e.target as HTMLElement;
-  if (target.closest("#record-controls")) return;
+  if (target.closest("#record-controls, #hint button")) return;
   if (selection) {
     if (!sel.contains(target)) return;
     adjustment = { rect: { ...selection }, mode: target.dataset.handle || "move", x: e.clientX, y: e.clientY };
