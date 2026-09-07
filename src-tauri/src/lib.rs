@@ -720,6 +720,7 @@ fn cancel_capture(app: AppHandle, state: State<Shot>) {
         {
             if let Some(w) = app.get_webview_window(label) {
                 let _ = w.show();
+                clip_playing(&w, true);
             }
         }
     }
@@ -734,6 +735,7 @@ fn cancel_capture(app: AppHandle, state: State<Shot>) {
 fn new_capture(app: AppHandle, state: State<Shot>, window: tauri::WebviewWindow) -> Result<(), String> {
     let video = window.label() == VPIN;
     if window.is_visible().unwrap_or(false) {
+        clip_playing(&window, false);
         let _ = window.hide();
         state
             .pin(window.label())
@@ -751,11 +753,24 @@ fn new_capture(app: AppHandle, state: State<Shot>, window: tauri::WebviewWindow)
     })
 }
 
+/// Playback follows the window. A pinned recording that keeps playing while its
+/// window is hidden holds WebView2's display wake lock, so the screen never
+/// sleeps and a renderer decodes frames nobody can see. The still pin's <video>
+/// has no source; pausing it is a no-op.
+fn clip_playing(w: &tauri::WebviewWindow, on: bool) {
+    let _ = w.eval(if on {
+        "document.getElementById('clip')?.play()"
+    } else {
+        "document.getElementById('clip')?.pause()"
+    });
+}
+
 #[tauri::command]
 fn close_preview(window: tauri::WebviewWindow) {
     // Hidden, never closed: building a webview window costs 3-11 s on this
     // machine (measured), and a closed pin made every next capture pay it.
     // Hidden, the next capture is a ~100 ms reload.
+    clip_playing(&window, false);
     let _ = window.hide();
 }
 
@@ -1151,6 +1166,8 @@ fn preview_ready(state: State<Shot>, window: tauri::WebviewWindow) {
         .wanted
         .load(std::sync::atomic::Ordering::Relaxed)
     {
+        // The warm-up load already started the newest recording playing.
+        clip_playing(&window, false);
         return;
     }
     eprintln!("pin: {} shown, t+{}ms", window.label(), uptime_ms());
