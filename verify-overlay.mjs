@@ -530,6 +530,11 @@ async function main() {
   const scaled = await read("(({x,y,width,height}) => [x,y,width,height])(document.getElementById('sel').getBoundingClientRect())");
   if (JSON.stringify(scaled) !== JSON.stringify([640, 200, 640, 500])) fail(`scaled monitor bounds: ${JSON.stringify(scaled)}`);
   else pass("Full screen selects the region's monitor with negative desktop origins and mixed DPI");
+  // The window is taller than this monitor: the controls must land on the
+  // monitor, not in the window's dead space below it.
+  const placed = await read("(({x,y,right,bottom}) => [x,y,right,bottom])(document.getElementById('record-controls').getBoundingClientRect())");
+  if (placed[0] < 640 || placed[1] < 200 || placed[2] > 1280 || placed[3] > 700) fail(`record controls off the selected monitor: ${JSON.stringify(placed)}`);
+  else pass("record controls stay on the selected monitor when the window is taller");
   await read("recDone(); window.__failMonitor = true; document.querySelector('#hint [data-fullscreen]').click()");
   await waitFor("monitor error", () => read("document.getElementById('hud').textContent.includes('Monitor unavailable')"));
   if (!await read("!document.querySelector('#hint [data-fullscreen]').disabled && document.getElementById('record-controls').hidden"))

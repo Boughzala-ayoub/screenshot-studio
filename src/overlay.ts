@@ -29,6 +29,23 @@ let adjustment: { rect: Rect; mode: string; x: number; y: number } | null = null
 let starting = false;
 const isVideo = () => document.body.classList.contains("video");
 
+// The window spans every monitor, so "inside the window" is not "on a
+// screen": with a 1080-tall primary next to a 900-tall second monitor, the
+// bottom 180px of the window on the second monitor's side is dead space.
+// Anything placed near a point is kept on the monitor under that point.
+let monitors: Rect[] = []; // CSS pixels, window-relative, per capture
+async function loadMonitors() {
+  const win = getCurrentWindow();
+  const [ms, origin, scale] = await Promise.all([availableMonitors(), win.innerPosition(), win.scaleFactor()]);
+  monitors = ms.map((m) => ({ x: (m.position.x - origin.x) / scale, y: (m.position.y - origin.y) / scale,
+    w: m.size.width / scale, h: m.size.height / scale }));
+  if (!monitors.length) throw new Error("No monitor available");
+}
+function monitorAt(x: number, y: number): Rect {
+  return monitors.find((m) => x >= m.x && x <= m.x + m.w && y >= m.y && y <= m.y + m.h)
+    || monitors[0] || { x: 0, y: 0, w: innerWidth, h: innerHeight };
+}
+
 // One CPU-readable copy of the frame, so the loupe can name the color under
 // the cursor. Redrawn once per capture, sampled one pixel at a time.
 const sampler = document.createElement("canvas");
@@ -98,7 +115,9 @@ async function captures() {
       reset();
       // The badge and the hint say which of the two the drag will do.
       document.body.classList.toggle("video", info.video);
-      if (!info.video) {
+      monitors = [];
+      if (info.video) await loadMonitors().catch(() => {}); // the Full screen button retries and reports
+      else {
         const bmp = await invoke<ArrayBuffer>("frozen_frame");
         url = URL.createObjectURL(new Blob([bmp], { type: "image/bmp" }));
         frozen.src = url;
@@ -158,9 +177,9 @@ function aim(x: number, y: number) {
 function readout(text: string, x: number, y: number) {
   hud.hidden = false;
   hud.textContent = text;
-  const below = y + 8;
-  hud.style.left = `${Math.max(0, Math.min(x, innerWidth - hud.offsetWidth - 8))}px`;
-  hud.style.top = `${below + hud.offsetHeight > innerHeight ? y - hud.offsetHeight - 8 : below}px`;
+  const below = y + 8, m = monitorAt(x, y);
+  hud.style.left = `${Math.max(m.x, Math.min(x, m.x + m.w - hud.offsetWidth - 8))}px`;
+  hud.style.top = `${below + hud.offsetHeight > m.y + m.h ? y - hud.offsetHeight - 8 : below}px`;
 }
 
 function paint(r: Rect) {
@@ -202,11 +221,12 @@ function select(r: Rect) {
   sel.tabIndex = 0;
   paint(r);
   const height = recordControls.offsetHeight, width = recordControls.offsetWidth;
+  const m = monitorAt(r.x + r.w / 2, r.y + r.h / 2);
   const below = r.y + r.h + 40, above = r.y - height - 12;
-  const top = below + height <= innerHeight - 12 ? below
-    : above >= 12 ? above : clamp(r.y + r.h - height - 24, 12, innerHeight - height - 12);
+  const top = below + height <= m.y + m.h - 12 ? below
+    : above >= m.y + 12 ? above : clamp(r.y + r.h - height - 24, m.y + 12, m.y + m.h - height - 12);
   recordControls.style.top = `${top}px`;
-  recordControls.style.left = `${clamp(r.x + r.w / 2, width / 2 + 12, innerWidth - width / 2 - 12)}px`;
+  recordControls.style.left = `${clamp(r.x + r.w / 2, m.x + width / 2 + 12, m.x + m.w - width / 2 - 12)}px`;
 }
 
 async function startRecording() {
@@ -237,17 +257,11 @@ document.querySelectorAll<HTMLButtonElement>("[data-fullscreen]").forEach((butto
     if (!isVideo() || starting || start || adjustment || document.body.classList.contains("live")) return;
     button.disabled = true;
     try {
-      const win = getCurrentWindow();
-      const [monitors, origin, scale] = await Promise.all([availableMonitors(), win.innerPosition(), win.scaleFactor()]);
+      await loadMonitors();
       if (starting || start || adjustment || document.body.classList.contains("live")) return;
       const target = selection || button.getBoundingClientRect();
-      const x = origin.x + (target.x + ("w" in target ? target.w : target.width) / 2) * scale;
-      const y = origin.y + (target.y + ("h" in target ? target.h : target.height) / 2) * scale;
-      const monitor = monitors.find((m) => x >= m.position.x && x < m.position.x + m.size.width
-        && y >= m.position.y && y < m.position.y + m.size.height) || monitors[0];
-      if (!monitor) throw new Error("No monitor available");
-      select({ x: (monitor.position.x - origin.x) / scale, y: (monitor.position.y - origin.y) / scale,
-        w: monitor.size.width / scale, h: monitor.size.height / scale });
+      const { x, y } = target, w = "w" in target ? target.w : target.width, h = "h" in target ? target.h : target.height;
+      select({ ...monitorAt(x + w / 2, y + h / 2) });
       recordButton.focus();
     } catch (err) {
       readout(String(err), 12, 60);

@@ -66,6 +66,60 @@ try {
     Check $ready "overlay, pin and editor windows built ($(((Get-Content "$log.err" -EA 0) -match 'built') -join '; '))"
     Start-Sleep -Seconds 1
 
+    # --- full screen ----------------------------------------------------
+    # Tab lands on the hint's Full screen button, the only focusable thing
+    # before a drag. It needs the monitor permissions in capabilities: without
+    # them the click fails and the Record controls never show.
+    Press-Chord $RECORD
+    $up = Wait-Window $app.Id '*select a region*'
+    Check (@($up | Where-Object Title -like '*select a region*').Count -eq 1) "the record hotkey raised the overlay for full screen"
+    Start-Sleep -Milliseconds 500
+    Press-Chord @(0x09); Start-Sleep -Milliseconds 200
+    Press-Chord @(0x0D); Start-Sleep -Milliseconds 800
+    Press-Chord @(0x0D) # Full screen focuses Record; Enter starts it.
+    $bar = Wait-Window $app.Id '*pinned video*'
+    $pin = @($bar | Where-Object Title -like '*pinned video*')
+    Check ($pin.Count -eq 1) "Full screen + Record raised the stop bar (saw: $(($bar.Title) -join ', '))"
+    if ($pin.Count -eq 1) {
+        $r = New-Object W32.Input+RECT
+        [void][W32.Input]::GetWindowRect($pin[0].H, [ref]$r)
+        Check ($r.T -lt 100) "the stop bar sits at the top for a full-screen recording (top $($r.T))"
+    }
+    Start-Sleep -Seconds 1
+    Press-Chord $RECORD
+    $full = $null
+    foreach ($i in 1..80) {
+        $full = @(Get-ChildItem $OutDir -Filter *.mp4 -EA 0 | Where-Object { $beforeMp4 -notcontains $_.FullName })
+        if ($full.Count -eq 1) { break }
+        Start-Sleep -Milliseconds 250
+    }
+    Check ($full.Count -eq 1) "full-screen recording produced one mp4 (got $($full.Count))"
+    if ($full.Count -eq 1) {
+        Start-Sleep -Seconds 1
+        $screen = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $info = Get-MediaInfo $full[0].FullName
+        Check (([Math]::Abs($info.Width - $screen.Width) -le 2) -and ([Math]::Abs($info.Height - $screen.Height) -le 2)) `
+            "full-screen mp4 is $($info.Width)x$($info.Height), monitor is $($screen.Width)x$($screen.Height)"
+    }
+    # Esc closes the pinned recording so the region pass below starts clean.
+    $vp = @((Wait-Window $app.Id '*pinned video*') | Where-Object Title -like '*pinned video*')
+    if ($vp.Count -eq 1) {
+        Start-Sleep -Seconds 1
+        $r = New-Object W32.Input+RECT
+        [void][W32.Input]::GetWindowRect($vp[0].H, [ref]$r)
+        [void][W32.Input]::SetCursorPos($r.L + 80, $r.T + 90); Start-Sleep -Milliseconds 200
+        [W32.Input]::mouse_event($LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 60
+        [W32.Input]::mouse_event($LEFTUP, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 300
+        Press-Chord @(0x1B)
+        foreach ($i in 1..40) {
+            if (@(Get-AppWindows $app.Id | Where-Object Title -like '*pinned video*').Count -eq 0) { break }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+    Check (@(Get-AppWindows $app.Id | Where-Object Title -like '*pinned video*').Count -eq 0) "the full-screen pin closed on Esc"
+    $beforeMp4 = @(Get-ChildItem $OutDir -Filter *.mp4 -EA 0 | Select-Object -Expand FullName)
+    Start-Sleep -Seconds 1
+
     # --- record ---------------------------------------------------------
     Press-Chord $RECORD
     $up = Wait-Window $app.Id '*select a region*'
