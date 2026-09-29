@@ -96,6 +96,24 @@ impl Shot {
     fn pin(&self, label: &str) -> &Pin {
         &self.pins[(label == VPIN) as usize]
     }
+
+    fn crop(&self, rect: CssRect, scale: f64) -> Result<(RgbaImage, (u32, u32)), String> {
+        // Selection is finished: release the desktop before encoding the crop.
+        let frame = self
+            .frame
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or("nothing captured")?;
+        let (x, y, w, h) = css_rect_to_physical(rect, scale, frame.width(), frame.height())
+            .ok_or("empty selection")?;
+        let crop = if (x, y, w, h) == (0, 0, frame.width(), frame.height()) {
+            frame
+        } else {
+            image::imageops::crop_imm(&frame, x, y, w, h).to_image()
+        };
+        Ok((crop, (x, y)))
+    }
 }
 
 /// The still pin's twin for recordings: the other label, the other kind.
@@ -367,7 +385,8 @@ fn png_bytes(img: &RgbaImage) -> Result<Vec<u8>, String> {
     let enc = PngEncoder::new_with_quality(
         Cursor::new(&mut buf),
         CompressionType::Fast,
-        FilterType::Adaptive,
+        // Fixed filtering avoids trying all PNG filters for every scanline.
+        FilterType::Sub,
     );
     img.write_with_encoder(enc).map_err(|e| e.to_string())?;
     Ok(buf)
@@ -706,6 +725,8 @@ fn fit_pin(window: tauri::WebviewWindow, w: u32, h: u32) -> Result<(), String> {
 
 #[tauri::command]
 fn cancel_capture(app: AppHandle, state: State<Shot>) {
+    state.frame.lock().unwrap().take();
+    *state.frame_bmp.lock().unwrap() = Vec::new();
     if let Some(w) = app.get_webview_window(OVERLAY) {
         let _ = w.hide(); // kept alive so the next capture is instant
     }
@@ -966,16 +987,7 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
     let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
     let _ = overlay.hide();
 
-    let (crop, at) = {
-        let guard = state.frame.lock().unwrap();
-        let frame = guard.as_ref().ok_or("nothing captured")?;
-        let (x, y, w, h) = css_rect_to_physical(rect, scale, frame.width(), frame.height())
-            .ok_or("empty selection")?;
-        (
-            image::imageops::crop_imm(frame, x, y, w, h).to_image(),
-            (x, y),
-        )
-    };
+    let (crop, at) = state.crop(rect, scale)?;
 
     // The overlay covers every screen, so the pin belongs on whichever one the
     // selection came from rather than on whichever one the overlay called its own.
@@ -1705,6 +1717,96 @@ mod tests {
         let back = image::load_from_memory(&png).unwrap().to_rgba8();
         assert_eq!(back.dimensions(), (3, 2));
         assert_eq!(back, img);
+    }
+
+    #[test]
+    fn finished_crop_releases_desktop_and_reuses_full_frame() {
+        let state = Shot::default();
+        let img = RgbaImage::from_fn(8, 6, |x, y| image::Rgba([x as u8, y as u8, 7, 255]));
+        *state.frame.lock().unwrap() = Some(img.clone());
+        let (crop, at) = state.crop(r(1., 1., 2., 1.), 2.).unwrap();
+        assert_eq!(at, (2, 2));
+        assert_eq!(crop, image::imageops::crop_imm(&img, 2, 2, 4, 2).to_image());
+        assert!(
+            state.frame.lock().unwrap().is_none(),
+            "finished capture retains the desktop"
+        );
+        let allocation = img.as_ptr();
+        *state.frame.lock().unwrap() = Some(img);
+        let (full, _) = state.crop(r(0., 0., 8., 6.), 1.).unwrap();
+        assert_eq!(
+            full.as_ptr(),
+            allocation,
+            "full-screen crop copied the desktop"
+        );
+        assert!(state.frame.lock().unwrap().is_none());
+        *state.frame.lock().unwrap() = Some(full);
+        assert!(state.crop(r(0., 0., 0., 0.), 1.).is_err());
+        assert!(
+            state.frame.lock().unwrap().is_none(),
+            "failed crop retains the desktop"
+        );
+    }
+
+    #[test]
+    #[ignore = "capture/encoding timings; reads the primary display without saving it"]
+    fn capture_performance() {
+        use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+        use std::time::Instant;
+
+        assert!(!cfg!(debug_assertions), "run with cargo test --release");
+        let monitor = xcap::Monitor::all()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.is_primary().unwrap_or(false))
+            .unwrap();
+        let t = Instant::now();
+        let desktop = monitor.capture_image().unwrap();
+        eprintln!(
+            "desktop capture {:?}, {}x{}",
+            t.elapsed(),
+            desktop.width(),
+            desktop.height()
+        );
+        let gradient = RgbaImage::from_fn(3840, 2160, |x, y| {
+            image::Rgba([(x / 16) as u8, (y / 9) as u8, ((x + y) / 24) as u8, 255])
+        });
+        let mut seed = 7u32;
+        let noise = RgbaImage::from_fn(1920, 1080, |_, _| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let [r, g, b, _] = seed.to_le_bytes();
+            image::Rgba([r, g, b, 255])
+        });
+        for (name, img) in [("desktop", &desktop), ("4k gradient", &gradient), ("noise", &noise)] {
+            let t = Instant::now();
+            std::hint::black_box(bmp_bytes(img));
+            eprintln!("{name} BMP {:?}", t.elapsed());
+            for adaptive in [true, false] {
+                let mut times = Vec::new();
+                let mut bytes = Vec::new();
+                for _ in 0..7 {
+                    let t = Instant::now();
+                    if adaptive {
+                        bytes = Vec::new();
+                        img.write_with_encoder(PngEncoder::new_with_quality(
+                            &mut bytes, CompressionType::Fast, FilterType::Adaptive,
+                        )).unwrap();
+                    } else {
+                        bytes = png_bytes(img).unwrap();
+                    }
+                    times.push(t.elapsed());
+                }
+                times.sort();
+                assert_eq!(image::load_from_memory(&bytes).unwrap().to_rgba8(), *img);
+                eprintln!(
+                    "{name} adaptive={adaptive}: median {:?}, {} bytes",
+                    times[3],
+                    bytes.len()
+                );
+            }
+        }
     }
 
     #[test]
