@@ -87,8 +87,8 @@ class Cdp {
 const STUB = `window.__TAURI_INTERNALS__ = {
   metadata: { currentWindow: { label: 'overlay' } },
   convertFileSrc() { return window.__videoUrl; },
-  invoke(cmd, args) {
-    (window.__calls ||= []).push({ cmd, args });
+  invoke(cmd, args, options) {
+    (window.__calls ||= []).push({ cmd, args, options });
     if (cmd === 'plugin:window|scale_factor') return Promise.resolve(window.__scale || 1);
     if (cmd === 'plugin:window|inner_position') return Promise.resolve(window.__origin || { x: 0, y: 0 });
     if (cmd === 'plugin:window|available_monitors') return window.__failMonitor
@@ -124,7 +124,10 @@ const STUB = `window.__TAURI_INTERNALS__ = {
         setTimeout(() => recorder.stop(), 250);
       });
     }
-    if (cmd === "edit_target") return Promise.resolve("a.png");
+    if (cmd === "edit_target") return Promise.resolve([7, "a.png"]);
+    if (cmd === "clipboard_ticket") return Promise.resolve(window.__ticket = (window.__ticket || 0) + 1);
+    if (cmd === "copy_edited" && window.__holdCopies) return new Promise((resolve, reject) =>
+      window.__copyQueue.push({ ticket: Number(options.headers.ticket), resolve, reject }));
     if (cmd === "recording_ms") return Promise.resolve(65000);
     if (cmd === "pause_recording") return Promise.resolve(args.on);
     // Like the real backend: one generation per "press", then park for ever.
@@ -629,10 +632,11 @@ async function main() {
   await waitFor("save_edited", () => read("(window.__calls||[]).some(c => c.cmd === 'save_edited')"));
   const saved = await read(
     "(() => { const c = (window.__calls||[]).find(c => c.cmd === 'save_edited'); const a = c.args;" +
-      "return a instanceof Uint8Array && a.length > 8 && a[1] === 0x50 && a[2] === 0x4e && a[3] === 0x47; })()",
+      "return a instanceof Uint8Array && a.length > 8 && a[1] === 0x50 && a[2] === 0x4e && a[3] === 0x47 &&" +
+      " c.options?.headers?.edit === '7' && /^[0-9]+$/.test(c.options?.headers?.ticket); })()",
   );
-  if (!saved) fail("save_edited did not carry PNG bytes as its body");
-  else pass("Ctrl+S sends the PNG bytes to save_edited");
+  if (!saved) fail("save_edited did not carry PNG bytes as its body, tagged with edit 7 and a clipboard ticket");
+  else pass("Ctrl+S sends the PNG bytes to save_edited, tagged with its edit and its clipboard ticket");
   if (process.env.SHOT_EDITOR) {
     await drag([[cbox.x + 50, cbox.y + 50], [cbox.x + 200, cbox.y + 150]]);
     const { data } = await s("Page.captureScreenshot", { format: "png" });
@@ -728,6 +732,32 @@ async function main() {
     type: "mouseReleased", x: cbox.x + 169, y: cbox.y + 259,
     button: "left", buttons: 0, clickCount: 1,
   });
+
+  // Two Copies, the newer one fails, then the older one comes back. The
+  // backend skipped the older one (its ticket was superseded) and answers
+  // false: the clipboard holds neither, so the newer failure must stay up
+  // rather than turn into "copied to clipboard".
+  const masked = await read(`(async () => {
+    const tick = () => new Promise((r) => setTimeout(r, 0));
+    window.__holdCopies = true;
+    window.__copyQueue = [];
+    const status = document.getElementById("status");
+    document.getElementById("copy").click();
+    document.getElementById("copy").click();
+    for (let i = 0; i < 100 && window.__copyQueue.length < 2; i++) await new Promise((r) => setTimeout(r, 20));
+    window.__holdCopies = false;
+    if (window.__copyQueue.length < 2) return "only " + window.__copyQueue.length + " copies reached the backend";
+    const [older, newer] = window.__copyQueue.sort((x, y) => x.ticket - y.ticket);
+    newer.reject("clipboard busy");
+    await tick();
+    const failed = status.textContent;
+    older.resolve(false);
+    await tick();
+    return failed + " -> " + status.textContent;
+  })()`);
+  if (masked !== "clipboard busy -> clipboard busy")
+    fail(`a superseded older copy rewrote the newer copy's failure: ${masked}`);
+  else pass("a superseded older copy leaves the newer copy's failure on screen");
 
   // --- on the pin, a double right-click closes and a drag drags out -----
   // A left click stays inert, a drag past the 6px threshold hands the file

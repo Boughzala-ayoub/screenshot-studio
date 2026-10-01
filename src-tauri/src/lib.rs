@@ -54,10 +54,31 @@ struct RecPlace {
 struct Shot {
     /// True while the armed capture is a recording rather than a still.
     video: std::sync::atomic::AtomicBool,
+    /// Held from the moment a capture is claimed until its overlay is on
+    /// screen. Visibility alone cannot guard that stretch: the overlay stays
+    /// hidden while the screens are read and the page decodes, and a second
+    /// hotkey press in that gap would swap the frame under the first.
+    preparing: std::sync::atomic::AtomicBool,
     /// The recording in progress, if any.
     recording: Mutex<Option<(record::Recording, RecPlace)>>,
-    /// The shot the editor window is showing, or about to.
-    editing: Mutex<Option<PathBuf>>,
+    /// Held while a recording starts or is being finished, so Quit waits for
+    /// either instead of exiting halfway through.
+    finishing: Mutex<()>,
+    /// Set by Quit before it waits, so no recording starts behind its back.
+    quitting: std::sync::atomic::AtomicBool,
+    /// The newest still's clipboard copy: its path and, once the background
+    /// copy is done, whether it worked. The pin reports it once, then it is gone.
+    auto_copy: Mutex<Option<(PathBuf, Option<bool>)>>,
+    /// Clipboard writes, newest request wins: every copy takes a ticket from
+    /// `copies` when it is asked for, then writes under this lock only if no
+    /// copy has been asked for since. Otherwise a slow background copy could
+    /// land on top of a newer one after the pin had already said Copied.
+    clipboard: Mutex<()>,
+    copies: std::sync::atomic::AtomicU64,
+    /// The shot the editor window is showing, or about to, and which opening
+    /// of the editor that is. A save names its opening, so one still in
+    /// flight when the editor moves on to another shot cannot land on it.
+    editing: Mutex<Option<(u64, PathBuf)>>,
     /// Every monitor composited into one frame, physical pixels, and the same
     /// frame encoded once for the overlay to paint.
     frame: Mutex<Option<RgbaImage>>,
@@ -114,6 +135,52 @@ impl Shot {
         };
         Ok((crop, (x, y)))
     }
+
+    /// Where edit `id`'s save goes: the shot that edit opened, and only while
+    /// it is still the open one. A save from an edit since closed is refused
+    /// rather than written over whatever the editor holds now.
+    fn edit_path(&self, id: u64) -> Result<PathBuf, String> {
+        match &*self.editing.lock().unwrap() {
+            Some((open, path)) if *open == id => Ok(path.clone()),
+            _ => Err("that edit was closed".into()),
+        }
+    }
+
+    /// Put edit `id`'s flushed temp file over its shot and end the edit, only
+    /// if it is still the open one. Check, rename and end happen under one
+    /// lock, so no close or reopen fits between them: a save that outlived
+    /// its edit never lands, not even on a file a newer edit has since saved.
+    fn commit_edit(&self, id: u64, tmp: &Path, path: &Path) -> Result<(), String> {
+        let mut editing = self.editing.lock().unwrap();
+        if editing.as_ref().map(|(open, _)| *open) != Some(id) {
+            let _ = std::fs::remove_file(tmp);
+            return Err("that edit was closed before it saved".into());
+        }
+        put_in_place(tmp, path)?;
+        *editing = None;
+        Ok(())
+    }
+
+    /// A place in line for the clipboard, taken when the copy is asked for.
+    fn clipboard_ticket(&self) -> u64 {
+        self.copies
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// Run `write` unless a copy asked for after `ticket` has superseded it.
+    /// Ok(false) when skipped: the newer copy is the one the user wants.
+    fn clipboard_write(
+        &self,
+        ticket: u64,
+        write: impl FnOnce() -> Result<(), String>,
+    ) -> Result<bool, String> {
+        let _turn = self.clipboard.lock().unwrap();
+        if self.copies.load(std::sync::atomic::Ordering::SeqCst) != ticket {
+            return Ok(false);
+        }
+        write().map(|()| true)
+    }
 }
 
 /// The still pin's twin for recordings: the other label, the other kind.
@@ -129,7 +196,13 @@ impl Default for Shot {
     fn default() -> Self {
         Self {
             video: std::sync::atomic::AtomicBool::new(false),
+            preparing: std::sync::atomic::AtomicBool::new(false),
             recording: Mutex::default(),
+            finishing: Mutex::default(),
+            quitting: Default::default(),
+            auto_copy: Mutex::default(),
+            clipboard: Mutex::default(),
+            copies: Default::default(),
             editing: Mutex::default(),
             frame: Mutex::default(),
             origin: Mutex::default(),
@@ -442,15 +515,30 @@ fn fresh_shot_path(dir: &Path, ext: &str) -> PathBuf {
     path
 }
 
-/// Prepare the desktop bounds for selection and freeze pixels only for stills.
-/// Video setup looks through the transparent overlay until Record is pressed.
+/// Claim the capture, then prepare it. A press while another capture is being
+/// prepared or is on screen is dropped rather than allowed to replace the
+/// frame the user is selecting from.
 fn begin_capture(app: &AppHandle, video: bool) -> Result<(), String> {
+    use std::sync::atomic::Ordering::SeqCst;
+    let state = app.state::<Shot>();
+    if state.preparing.swap(true, SeqCst) {
+        return Ok(()); // one is on its way to the screen
+    }
+    // Checked after the claim: overlay_ready shows the window before it lets
+    // go, so a press can never slip between the two.
     let visible = app
         .get_webview_window(OVERLAY)
         .is_some_and(|w| w.is_visible().unwrap_or(false));
     if visible {
+        state.preparing.store(false, SeqCst);
         return Ok(()); // already selecting, or the overlay is framing a recording
     }
+    prepare_capture(app, video).inspect_err(|_| state.preparing.store(false, SeqCst))
+}
+
+/// Prepare the desktop bounds for selection and freeze pixels only for stills.
+/// Video setup looks through the transparent overlay until Record is pressed.
+fn prepare_capture(app: &AppHandle, video: bool) -> Result<(), String> {
     app.state::<Shot>()
         .video
         .store(video, std::sync::atomic::Ordering::Relaxed);
@@ -616,6 +704,10 @@ fn overlay_ready(app: AppHandle, state: State<Shot>) {
             SetWindowLongW(hwnd, GWL_EXSTYLE, style | WS_EX_TOOLWINDOW.0 as i32);
         }
     }
+    // On screen now, so visibility guards the rest of the capture.
+    state
+        .preparing
+        .store(false, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[tauri::command]
@@ -654,31 +746,31 @@ fn shot_png(app: AppHandle, path: String) -> Result<tauri::ipc::Response, String
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-/// The path as clipboard text, for somewhere that wants characters.
-#[tauri::command]
-fn copy_path(app: AppHandle, path: String) -> Result<(), String> {
+/// The path as clipboard text, for somewhere that wants characters. async:
+/// it may wait its turn behind a slow image copy, and not on the UI thread.
+/// Like every explicit copy: true once it is on the clipboard, false when a
+/// newer copy took its place first. False is no success to report: the newer
+/// copy reports for itself, and may have failed.
+#[tauri::command(async)]
+fn copy_path(app: AppHandle, state: State<Shot>, path: String) -> Result<bool, String> {
+    let ticket = state.clipboard_ticket();
     let path = checked_shot(&app, &path)?;
-    arboard::Clipboard::new()
-        .and_then(|mut c| c.set_text(path.to_string_lossy().into_owned()))
-        .map_err(|e| e.to_string())
+    state.clipboard_write(ticket, || {
+        arboard::Clipboard::new()
+            .and_then(|mut c| c.set_text(path.to_string_lossy().into_owned()))
+            .map_err(|e| e.to_string())
+    })
 }
 
 /// Put a kept shot back on the clipboard. A fresh capture is already there, but
 /// flipping the pin to an older shot and pressing copy is the way to get that
 /// one back without re-taking it. async: the decode is off the UI thread.
 #[tauri::command(async)]
-fn copy_shot(app: AppHandle, path: String) -> Result<(), String> {
+fn copy_shot(app: AppHandle, state: State<Shot>, path: String) -> Result<bool, String> {
+    let ticket = state.clipboard_ticket();
     let path = checked_shot(&app, &path)?;
     let img = image::open(&path).map_err(|e| e.to_string())?.to_rgba8();
-    arboard::Clipboard::new()
-        .and_then(|mut c| {
-            c.set_image(arboard::ImageData {
-                width: img.width() as usize,
-                height: img.height() as usize,
-                bytes: Cow::Borrowed(img.as_raw()),
-            })
-        })
-        .map_err(|e| e.to_string())
+    state.clipboard_write(ticket, || clipboard_image(&img))
 }
 
 /// Open the shots folder in Explorer, from the pin as well as the tray.
@@ -727,7 +819,19 @@ fn fit_pin(window: tauri::WebviewWindow, w: u32, h: u32) -> Result<(), String> {
 fn cancel_capture(app: AppHandle, state: State<Shot>) {
     state.frame.lock().unwrap().take();
     *state.frame_bmp.lock().unwrap() = Vec::new();
-    if let Some(w) = app.get_webview_window(OVERLAY) {
+    let overlay = app.get_webview_window(OVERLAY);
+    // Still hidden means the page failed to paint its frame and the capture
+    // is still claimed. Once on screen the claim was let go, and one held now
+    // belongs to a newer press.
+    if !overlay
+        .as_ref()
+        .is_some_and(|w| w.is_visible().unwrap_or(false))
+    {
+        state
+            .preparing
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+    if let Some(w) = overlay {
         let _ = w.hide(); // kept alive so the next capture is instant
     }
     // A retake started from a pin hid it to keep it out of the frame, so a
@@ -753,7 +857,11 @@ fn cancel_capture(app: AppHandle, state: State<Shot>) {
 /// rather than closed: the next crop reuses this window, and a cancel puts it
 /// straight back.
 #[tauri::command(async)]
-fn new_capture(app: AppHandle, state: State<Shot>, window: tauri::WebviewWindow) -> Result<(), String> {
+fn new_capture(
+    app: AppHandle,
+    state: State<Shot>,
+    window: tauri::WebviewWindow,
+) -> Result<(), String> {
     let video = window.label() == VPIN;
     if window.is_visible().unwrap_or(false) {
         clip_playing(&window, false);
@@ -855,7 +963,6 @@ fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<
 
     let dir = shots_dir(&app)?;
     let path = fresh_shot_path(&dir, "mp4");
-    let rec = record::start(hmonitor, crop, path.clone())?;
     let place = RecPlace {
         w: crop.w,
         h: crop.h,
@@ -863,7 +970,18 @@ fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<
         mon_pos,
         mon_size,
     };
-    *state.recording.lock().unwrap() = Some((rec, place));
+    {
+        // The encoder exists well before record::start returns. Under the
+        // same lock as Stop and Quit, a Quit that lands meanwhile waits for
+        // the recording to be published and then finishes it; one already
+        // under way turns the start away.
+        let _finishing = state.finishing.lock().unwrap();
+        if state.quitting.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("quitting".into());
+        }
+        let rec = record::start(hmonitor, crop, path.clone())?;
+        *state.recording.lock().unwrap() = Some((rec, place));
+    }
     eprintln!("record: {}x{} -> {}", crop.w, crop.h, path.display());
 
     // The overlay turns into the frame: transparent, mouse passes through.
@@ -893,7 +1011,8 @@ fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<
         let shot = handle.state::<Shot>();
         let pin = shot.pin(VPIN);
         pin.wanted.store(true, std::sync::atomic::Ordering::Relaxed);
-        pin.parked.store(false, std::sync::atomic::Ordering::Relaxed);
+        pin.parked
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         if let Some(w) = handle.get_webview_window(VPIN) {
             let _ = w.set_size(bar);
             let _ = w.set_position(PhysicalPosition::new(bx, by));
@@ -909,6 +1028,7 @@ fn start_recording(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<
 /// The file is then pinned like a still.
 #[tauri::command(async)]
 fn stop_recording(app: AppHandle, state: State<Shot>) -> Result<(), String> {
+    let finishing = state.finishing.lock().unwrap();
     let Some((rec, place)) = state.recording.lock().unwrap().take() else {
         return Ok(());
     };
@@ -919,6 +1039,7 @@ fn stop_recording(app: AppHandle, state: State<Shot>) -> Result<(), String> {
         let _ = w.eval("recDone()");
     }
     let path = record::stop(rec)?;
+    drop(finishing);
     eprintln!(
         "record: stopped in {}ms, {}",
         t.elapsed().as_millis(),
@@ -983,15 +1104,18 @@ fn toggle_record(app: &AppHandle) {
 }
 
 fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result<String, String> {
+    let ticket = state.clipboard_ticket(); // asked for at mouse-up, not after the encode
     let overlay = app.get_webview_window(OVERLAY).ok_or("overlay is gone")?;
     let scale = overlay.scale_factor().map_err(|e| e.to_string())?;
+    // Frame and origin first, hide second: once the overlay is hidden the next
+    // press may start a capture and replace both.
+    let cropped = state.crop(rect, scale);
+    let origin = *state.origin.lock().unwrap();
     let _ = overlay.hide();
-
-    let (crop, at) = state.crop(rect, scale)?;
+    let (crop, at) = cropped?;
 
     // The overlay covers every screen, so the pin belongs on whichever one the
     // selection came from rather than on whichever one the overlay called its own.
-    let origin = *state.origin.lock().unwrap();
     let centre = (
         (origin.0 + at.0 as i32 + crop.width() as i32 / 2) as f64,
         (origin.1 + at.1 as i32 + crop.height() as i32 / 2) as f64,
@@ -1030,22 +1154,75 @@ fn crop_and_deliver(app: AppHandle, state: State<Shot>, rect: CssRect) -> Result
         crop.height(),
         t.elapsed().as_millis()
     );
-    std::thread::spawn(move || {
-        let done = arboard::Clipboard::new().and_then(|mut c| {
+    let saved = path.to_string_lossy().into_owned();
+    copy_in_background(&app, ticket, path, crop);
+    Ok(saved)
+}
+
+fn clipboard_image(img: &RgbaImage) -> Result<(), String> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| {
             c.set_image(arboard::ImageData {
-                width: crop.width() as usize,
-                height: crop.height() as usize,
-                bytes: Cow::Borrowed(crop.as_raw()),
+                width: img.width() as usize,
+                height: img.height() as usize,
+                bytes: Cow::Borrowed(img.as_raw()),
             })
-        });
-        match done {
-            Ok(()) => eprintln!("capture: clipboard in {}ms", t.elapsed().as_millis()),
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// Put a still on the clipboard from its own thread and let the still pin
+/// know how that went. The pin asks auto_copied once it has painted `path` and
+/// is poked again when the answer lands, so neither order loses it. `ticket`
+/// is the one the capture or save took when it began, so a Copy pressed
+/// while it was still encoding or saving counts as the newer request.
+fn copy_in_background(app: &AppHandle, ticket: u64, path: PathBuf, img: RgbaImage) {
+    let state = app.state::<Shot>();
+    *state.auto_copy.lock().unwrap() = Some((path.clone(), None));
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        let state = app.state::<Shot>();
+        let ok = match state.clipboard_write(ticket, || clipboard_image(&img)) {
+            Ok(true) => {
+                eprintln!("clipboard: {}ms", t.elapsed().as_millis());
+                true
+            }
+            // A newer copy was asked for meanwhile and owns the clipboard;
+            // this one has nothing to report.
+            Ok(false) => return,
             // The shot is saved and pinned either way; the pin's copy button
             // is the retry.
-            Err(e) => eprintln!("clipboard: {e}"),
+            Err(e) => {
+                eprintln!("clipboard: {e}");
+                false
+            }
+        };
+        if let Some((p, done)) = state.auto_copy.lock().unwrap().as_mut() {
+            if *p == path {
+                *done = Some(ok);
+            }
+        }
+        if let Some(w) = app.get_webview_window(PREVIEW) {
+            let _ = w.eval("window.autoCopied?.()");
         }
     });
-    Ok(path.to_string_lossy().into_owned())
+}
+
+/// How the automatic copy of `path` went: None while it runs, or when it is
+/// some other shot's. Answered once, so a later reload of the pin does not
+/// claim a clipboard that may have changed since.
+#[tauri::command]
+fn auto_copied(state: State<Shot>, path: String) -> Option<bool> {
+    let mut slot = state.auto_copy.lock().unwrap();
+    let done = slot
+        .as_ref()
+        .filter(|(p, _)| p.as_os_str() == path.as_str())
+        .and_then(|(_, done)| *done);
+    if done.is_some() {
+        *slot = None;
+    }
+    done
 }
 
 /// The pin's window for a shot of this size: the picture shrunk to fit, plus the
@@ -1118,7 +1295,8 @@ fn build_preview(
     let pin = shot.pin(label);
     pin.wanted.store(true, std::sync::atomic::Ordering::Relaxed);
     // The retake, if this is one, delivered; there is nothing left to restore.
-    pin.parked.store(false, std::sync::atomic::Ordering::Relaxed);
+    pin.parked
+        .store(false, std::sync::atomic::Ordering::Relaxed);
     // The other pin, if it is showing, keeps its spot; this one goes above it.
     let other = app
         .get_webview_window(pin_label(label != VPIN))
@@ -1155,7 +1333,11 @@ fn build_preview(
 /// The page learns which pin it is from the URL.
 fn pin_window(app: &AppHandle, video: bool) -> Result<tauri::WebviewWindow, String> {
     let (label, url, title) = if video {
-        (VPIN, "preview.html?kind=video", "Screenshot Studio - pinned video")
+        (
+            VPIN,
+            "preview.html?kind=video",
+            "Screenshot Studio - pinned video",
+        )
     } else {
         (PREVIEW, "preview.html", "Screenshot Studio - pinned")
     };
@@ -1200,24 +1382,19 @@ fn open_editor(app: AppHandle, state: State<Shot>, path: String) -> Result<(), S
         .or(app.primary_monitor().map_err(|e| e.to_string())?)
         .ok_or("no monitor")?;
     let (mp, ms, scale) = (*monitor.position(), *monitor.size(), monitor.scale_factor());
-    // The picture at 1:1 plus the toolbar and some breathing room, capped at
-    // most of the screen; the page shrinks the canvas to fit from there.
-    let (bar, pad) = (52.0 * scale, 40.0 * scale);
-    let w = (iw as f64 + pad)
-        .clamp(640.0 * scale, ms.width as f64 * 0.92)
-        .round() as u32;
-    let h = (ih as f64 + pad + bar)
-        .clamp(420.0 * scale, ms.height as f64 * 0.92)
-        .round() as u32;
+    let (min, size) = editor_size(iw, ih, ms, scale);
     let pos = PhysicalPosition::new(
-        mp.x + (ms.width as i32 - w as i32) / 2,
-        mp.y + (ms.height as i32 - h as i32) / 2,
+        mp.x + (ms.width as i32 - size.width as i32) / 2,
+        mp.y + (ms.height as i32 - size.height as i32) / 2,
     );
-    *state.editing.lock().unwrap() = Some(path);
+    static OPENED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = OPENED.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    *state.editing.lock().unwrap() = Some((id, path));
     let handle = app.clone();
     app.run_on_main_thread(move || {
         if let Some(e) = handle.get_webview_window(EDITOR) {
-            let _ = e.set_size(PhysicalSize::new(w, h));
+            let _ = e.set_min_size(Some(min));
+            let _ = e.set_size(size);
             let _ = e.set_position(pos);
             let _ = e.eval("location.reload()");
         }
@@ -1225,15 +1402,39 @@ fn open_editor(app: AppHandle, state: State<Shot>, path: String) -> Result<(), S
     .map_err(|e| e.to_string())
 }
 
-/// What the editor page should load, or nothing on the startup warm-up.
+/// The editor's (minimum, opening) size for an iw x ih shot on a monitor:
+/// the picture at 1:1 plus the toolbar and some breathing room, capped at most
+/// of the screen; the page shrinks the canvas to fit from there. The floor
+/// keeps the toolbar usable but gives way to that cap, since 640x420 logical
+/// is more than a 1366x768 screen at 200% has.
+fn editor_size(
+    iw: u32,
+    ih: u32,
+    mon: PhysicalSize<u32>,
+    scale: f64,
+) -> (PhysicalSize<u32>, PhysicalSize<u32>) {
+    let (bar, pad) = (52.0 * scale, 40.0 * scale);
+    let (max_w, max_h) = (mon.width as f64 * 0.92, mon.height as f64 * 0.92);
+    let (min_w, min_h) = ((640.0 * scale).min(max_w), (420.0 * scale).min(max_h));
+    (
+        PhysicalSize::new(min_w.round() as u32, min_h.round() as u32),
+        PhysicalSize::new(
+            (iw as f64 + pad).clamp(min_w, max_w).round() as u32,
+            (ih as f64 + pad + bar).clamp(min_h, max_h).round() as u32,
+        ),
+    )
+}
+
+/// Which edit the editor page is, and the shot it should load. Nothing on the
+/// startup warm-up.
 #[tauri::command]
-fn edit_target(state: State<Shot>) -> Option<String> {
+fn edit_target(state: State<Shot>) -> Option<(u64, String)> {
     state
         .editing
         .lock()
         .unwrap()
         .as_ref()
-        .map(|p| p.to_string_lossy().into_owned())
+        .map(|(id, p)| (*id, p.to_string_lossy().into_owned()))
 }
 
 #[tauri::command]
@@ -1255,6 +1456,20 @@ fn close_editor(app: AppHandle, state: State<Shot>) {
     }
 }
 
+/// A place in line for the clipboard, for the editor: it takes one the moment
+/// Save or Copy is pressed and sends it along once the PNG export is done.
+/// Exports can finish in either order; the tickets keep the order of the
+/// presses.
+#[tauri::command]
+fn clipboard_ticket(state: State<Shot>) -> u64 {
+    state.clipboard_ticket()
+}
+
+/// A number the editor sends in a header beside its raw PNG body.
+fn header_u64(request: &tauri::ipc::Request<'_>, name: &str) -> Option<u64> {
+    request.headers().get(name)?.to_str().ok()?.parse().ok()
+}
+
 /// The PNG the page rendered, sent as the raw request body: no base64, no
 /// JSON, the bytes as they are.
 fn png_body<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String> {
@@ -1264,51 +1479,91 @@ fn png_body<'a>(request: &'a tauri::ipc::Request<'_>) -> Result<&'a [u8], String
     }
 }
 
-fn clipboard_png(bytes: &[u8]) -> Result<(), String> {
-    let img = image::load_from_memory(bytes)
-        .map_err(|e| e.to_string())?
-        .to_rgba8();
-    arboard::Clipboard::new()
-        .and_then(|mut c| {
-            c.set_image(arboard::ImageData {
-                width: img.width() as usize,
-                height: img.height() as usize,
-                bytes: Cow::Borrowed(img.as_raw()),
-            })
-        })
+fn decode_png(bytes: &[u8]) -> Result<RgbaImage, String> {
+    image::load_from_memory_with_format(bytes, image::ImageFormat::Png)
+        .map(|img| img.to_rgba8())
         .map_err(|e| e.to_string())
 }
 
-/// Save the annotated picture over the shot it came from, put it on the
-/// clipboard and close the editor. The pin reloads so it shows the new one.
+/// The slow half of replacing the file at `path`: `bytes` written beside it
+/// and flushed to disk, ready for put_in_place. Returns the temp file.
+fn write_beside(path: &Path, bytes: &[u8]) -> Result<PathBuf, String> {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().ok_or("no file name")?.to_string_lossy();
+    // Not a shot name, so the pin and pruning never see a half-written one.
+    let tmp = path.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
+    let done = std::fs::File::create(&tmp).and_then(|mut f| {
+        std::io::Write::write_all(&mut f, bytes)?;
+        f.sync_all() // on disk before it takes the original's place
+    });
+    match done {
+        Ok(()) => Ok(tmp),
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// The quick half: rename `tmp` over `path`, which replaces it in one step on
+/// the same volume, so there is never a moment where neither the old nor the
+/// new picture is whole. On failure the original stays and `tmp` is removed.
+fn put_in_place(tmp: &Path, path: &Path) -> Result<(), String> {
+    std::fs::rename(tmp, path).map_err(|e| {
+        let _ = std::fs::remove_file(tmp);
+        e.to_string()
+    })
+}
+
+/// Save the annotated picture over the shot it came from, close the editor
+/// and put it on the clipboard. The pin reloads so it shows the new one, and
+/// says whether the copy made it. The page names its edit in an `edit`
+/// header; the bytes are the body.
 #[tauri::command(async)]
 fn save_edited(
     app: AppHandle,
     state: State<Shot>,
     request: tauri::ipc::Request<'_>,
 ) -> Result<(), String> {
+    let ticket = header_u64(&request, "ticket").ok_or("save has no clipboard ticket")?;
+    let id = header_u64(&request, "edit").ok_or("save names no edit")?;
+    // Settled once, before anything slow: a later edit cannot redirect it.
+    let path = state.edit_path(id)?;
     let bytes = png_body(&request)?;
-    let path = state
-        .editing
-        .lock()
-        .unwrap()
-        .clone()
-        .ok_or("nothing being edited")?;
-    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-    clipboard_png(bytes)?;
-    close_editor(app.clone(), state);
+    // Decoded before the disk is touched: bytes that are not a PNG never
+    // replace a shot.
+    let img = decode_png(bytes)?;
+    let tmp = write_beside(&path, bytes)?;
+    state.commit_edit(id, &tmp, &path)?;
+    // Saved. Whatever the clipboard does now is the pin's to report, not a
+    // failed save. Hidden only if no newer edit has taken the window, checked
+    // and done on the UI thread: open_editor's reload and editor_ready's show
+    // run there too, so a newer edit cannot be shown between the two.
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if handle.state::<Shot>().editing.lock().unwrap().is_none() {
+            if let Some(w) = handle.get_webview_window(EDITOR) {
+                let _ = w.hide();
+            }
+        }
+    });
     if let Some(w) = app.get_webview_window(PREVIEW) {
         if w.is_visible().unwrap_or(false) {
             let _ = w.eval("location.reload()");
         }
     }
+    copy_in_background(&app, ticket, path, img);
     Ok(())
 }
 
-/// Clipboard only; the file on disk stays as it was.
+/// Clipboard only; the file on disk stays as it was. True or false as for
+/// copy_path.
 #[tauri::command(async)]
-fn copy_edited(request: tauri::ipc::Request<'_>) -> Result<(), String> {
-    clipboard_png(png_body(&request)?)
+fn copy_edited(state: State<Shot>, request: tauri::ipc::Request<'_>) -> Result<bool, String> {
+    let ticket = header_u64(&request, "ticket").ok_or("copy has no clipboard ticket")?;
+    let img = decode_png(png_body(&request)?)?;
+    state.clipboard_write(ticket, || clipboard_image(&img))
 }
 
 #[tauri::command]
@@ -1463,12 +1718,38 @@ fn build_overlay(app: &AppHandle) {
         .title("Screenshot Studio - edit")
         .visible(false)
         .inner_size(900.0, 620.0)
-        .min_inner_size(640.0, 420.0)
-        .build();
+        .build(); // open_editor sets the minimum, from the monitor it opens on
     match editor {
         Ok(_) => eprintln!("editor window built, t+{}ms", uptime_ms()),
         Err(e) => eprintln!("editor prebuild: {e}"),
     }
+}
+
+/// Quit, finishing any recording first: app.exit ends the process without
+/// ever reaching record::stop, which is what writes the MP4's last frame and
+/// closes the file. Off the main thread, so the event loop keeps running
+/// while that happens.
+fn quit(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<Shot>();
+        state
+            .quitting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Also waits out a recording that is still starting, or a Stop that
+        // is already finishing the file.
+        let _finishing = state.finishing.lock().unwrap();
+        let rec = state.recording.lock().unwrap().take();
+        if let Some((rec, _)) = rec {
+            // ponytail: stderr only, like every other background failure. A
+            // file that would not finish is no reason to refuse to quit.
+            match record::stop(rec) {
+                Ok(path) => eprintln!("record: finished {} on quit", path.display()),
+                Err(e) => eprintln!("record: {e}"),
+            }
+        }
+        app.exit(0);
+    });
 }
 
 fn capture_off_thread(app: &AppHandle) {
@@ -1546,6 +1827,25 @@ pub fn run() {
                 .build(),
         )
         .manage(Shot::default())
+        // The editor's X and Alt+F4 on either window would destroy a window
+        // that is built once at startup and never again, leaving Annotate or
+        // the hotkey dead until a restart. Take the page's own way out instead.
+        // The pins need none of this: build_preview rebuilds a missing one.
+        .on_window_event(|window, event| {
+            let tauri::WindowEvent::CloseRequested { api, .. } = event else {
+                return;
+            };
+            let app = window.app_handle();
+            match window.label() {
+                EDITOR => close_editor(app.clone(), app.state()),
+                // While recording, the overlay is the frame around the region
+                // and Stop is what takes it down.
+                OVERLAY if app.state::<Shot>().recording.lock().unwrap().is_some() => {}
+                OVERLAY => cancel_capture(app.clone(), app.state()),
+                _ => return,
+            }
+            api.prevent_close();
+        })
         .invoke_handler(tauri::generate_handler![
             frozen_frame,
             recent_shots,
@@ -1555,6 +1855,7 @@ pub fn run() {
             open_folder,
             drag_shot,
             fit_pin,
+            auto_copied,
             await_frame,
             overlay_ready,
             preview_ready,
@@ -1569,6 +1870,7 @@ pub fn run() {
             edit_target,
             editor_ready,
             close_editor,
+            clipboard_ticket,
             save_edited,
             copy_edited,
             get_settings,
@@ -1586,7 +1888,7 @@ pub fn run() {
                     "record" => toggle_record(app),
                     "settings" => open_settings(app),
                     "folder" => open_shots_dir(app),
-                    "quit" => app.exit(0),
+                    "quit" => quit(app),
                     _ => {}
                 })
                 .build(app)?;
@@ -1634,15 +1936,133 @@ mod tests {
         assert_eq!(stack_above(corner, size, None, 0, 12), corner);
         // The other pin holds the corner: this one goes right above it,
         // right-aligned with it.
-        let other = Some((PhysicalPosition::new(1480, 900), PhysicalSize::new(440, 156)));
+        let other = Some((
+            PhysicalPosition::new(1480, 900),
+            PhysicalSize::new(440, 156),
+        ));
         assert_eq!(
             stack_above(corner, size, other, 0, 12),
             PhysicalPosition::new(1520, 638)
         );
         // No room above (the other pin is near the top): overlap the corner
         // rather than leave the screen.
-        let high = Some((PhysicalPosition::new(1480, 100), PhysicalSize::new(440, 156)));
+        let high = Some((
+            PhysicalPosition::new(1480, 100),
+            PhysicalSize::new(440, 156),
+        ));
         assert_eq!(stack_above(corner, size, high, 0, 12), corner);
+    }
+
+    #[test]
+    fn editor_fits_small_high_dpi_screens() {
+        // 1366x768 at 200%: the 640x420 logical floor is 1280x840 physical,
+        // past the 92% cap, which used to panic in f64::clamp. The floor
+        // gives way instead.
+        let (min, size) = editor_size(300, 200, PhysicalSize::new(1366, 768), 2.0);
+        assert_eq!(min, PhysicalSize::new(1257, 707));
+        assert_eq!(size, min);
+        // Room to spare: the floor holds for a small shot, the cap for a big one.
+        let (min, size) = editor_size(100, 100, PhysicalSize::new(1920, 1080), 1.0);
+        assert_eq!(
+            (min, size),
+            (PhysicalSize::new(640, 420), PhysicalSize::new(640, 420))
+        );
+        let (_, size) = editor_size(4000, 3000, PhysicalSize::new(1920, 1080), 1.0);
+        assert_eq!(size, PhysicalSize::new(1766, 994));
+    }
+
+    #[test]
+    fn a_save_that_outlives_its_edit_never_lands() {
+        let dir = std::env::temp_dir().join(format!("ss-edit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("shot-1.png");
+        std::fs::write(&shot, b"original").unwrap();
+        let state = Shot::default();
+        let open = |id: u64| *state.editing.lock().unwrap() = Some((id, shot.clone()));
+        // Edit 1 starts saving: its path is settled and its bytes are on disk
+        // beside the shot...
+        open(1);
+        let path = state.edit_path(1).unwrap();
+        let late = write_beside(&path, b"edit 1").unwrap();
+        // ...when the editor is closed and reopened on the same shot, and
+        // edit 2 saves first.
+        open(2);
+        let first = write_beside(&path, b"edit 2").unwrap();
+        state.commit_edit(2, &first, &path).unwrap();
+        assert!(
+            state.editing.lock().unwrap().is_none(),
+            "the saved edit stays open"
+        );
+        // Edit 1's commit is refused: the newer save stays, its temp file goes.
+        assert!(state.commit_edit(1, &late, &path).is_err());
+        let kept = std::fs::read(&shot).unwrap();
+        let late_left = late.exists();
+        // A stale edit is refused up front too, before anything is written.
+        open(3);
+        let stale = state.edit_path(1);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(kept, b"edit 2", "the late save overwrote the newer one");
+        assert!(!late_left, "the refused save left its temp file");
+        assert!(stale.is_err());
+    }
+
+    #[test]
+    fn the_newest_clipboard_request_wins() {
+        let state = Shot::default();
+        let board = Mutex::new("");
+        let put = |s| {
+            *board.lock().unwrap() = s;
+            Ok(())
+        };
+        // A asked for first, B second, B's write gets in first: A then skips
+        // rather than overwrite the copy the pin already called Copied.
+        let (a, b) = (state.clipboard_ticket(), state.clipboard_ticket());
+        assert_eq!(state.clipboard_write(b, || put("B")), Ok(true));
+        assert_eq!(state.clipboard_write(a, || put("A")), Ok(false));
+        assert_eq!(*board.lock().unwrap(), "B");
+        // In order, both write and the later one is what stays.
+        let a = state.clipboard_ticket();
+        assert_eq!(state.clipboard_write(a, || put("A")), Ok(true));
+        let b = state.clipboard_ticket();
+        assert_eq!(state.clipboard_write(b, || put("B")), Ok(true));
+        assert_eq!(*board.lock().unwrap(), "B");
+        // A copy asked for after A but still decoding also beats A.
+        let (a, _c) = (state.clipboard_ticket(), state.clipboard_ticket());
+        assert_eq!(state.clipboard_write(a, || put("A")), Ok(false));
+        assert_eq!(*board.lock().unwrap(), "B");
+        // The newest copy fails, then the older one comes round: it is still
+        // skipped, and says so with false rather than a success, because the
+        // clipboard holds neither.
+        let (a, b) = (state.clipboard_ticket(), state.clipboard_ticket());
+        let busy = state.clipboard_write(b, || Err("clipboard busy".into()));
+        assert_eq!(busy, Err("clipboard busy".into()));
+        assert_eq!(state.clipboard_write(a, || put("A")), Ok(false));
+        assert_eq!(*board.lock().unwrap(), "B");
+    }
+
+    #[test]
+    fn replacing_a_shot_keeps_the_original_on_failure() {
+        let dir = std::env::temp_dir().join(format!("ss-replace-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let shot = dir.join("shot-1.png");
+        std::fs::write(&shot, b"original").unwrap();
+        put_in_place(&write_beside(&shot, b"edited").unwrap(), &shot).unwrap();
+        assert_eq!(std::fs::read(&shot).unwrap(), b"edited");
+        // Bytes that are not a PNG are refused before anything is written.
+        assert!(decode_png(b"not a png").is_err());
+        // A target that cannot be replaced (a directory here) stays as it was,
+        // and no temp file is left beside it.
+        let blocked = dir.join("shot-2.png");
+        std::fs::create_dir(&blocked).unwrap();
+        assert!(put_in_place(&write_beside(&blocked, b"edited").unwrap(), &blocked).is_err());
+        assert!(blocked.is_dir());
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(left.len(), 2, "temp file left behind: {left:?}");
     }
 
     #[test]
@@ -1779,7 +2199,11 @@ mod tests {
             let [r, g, b, _] = seed.to_le_bytes();
             image::Rgba([r, g, b, 255])
         });
-        for (name, img) in [("desktop", &desktop), ("4k gradient", &gradient), ("noise", &noise)] {
+        for (name, img) in [
+            ("desktop", &desktop),
+            ("4k gradient", &gradient),
+            ("noise", &noise),
+        ] {
             let t = Instant::now();
             std::hint::black_box(bmp_bytes(img));
             eprintln!("{name} BMP {:?}", t.elapsed());
@@ -1791,8 +2215,11 @@ mod tests {
                     if adaptive {
                         bytes = Vec::new();
                         img.write_with_encoder(PngEncoder::new_with_quality(
-                            &mut bytes, CompressionType::Fast, FilterType::Adaptive,
-                        )).unwrap();
+                            &mut bytes,
+                            CompressionType::Fast,
+                            FilterType::Adaptive,
+                        ))
+                        .unwrap();
                     } else {
                         bytes = png_bytes(img).unwrap();
                     }

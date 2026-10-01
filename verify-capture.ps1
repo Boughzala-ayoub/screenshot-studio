@@ -1,6 +1,8 @@
 # End-to-end check of the real app: launch it, press the hotkey for real, drag a
 # real rectangle, then look at what came out. Takes over the screen and the mouse
-# for about fifteen seconds.
+# for about fifteen seconds. Its captures land in the real shots folder and
+# count towards the app's keep-five, so older shots there get pruned as if you
+# had taken them.
 #
 #   npm run verify:capture
 #
@@ -323,33 +325,9 @@ $f.ShowInTaskbar = $false
         Start-Sleep -Milliseconds 800
     }
 
-    # Only the newest KEEP survive. Seeding the folder is far quicker than taking
-    # six more screenshots, and it pins down which ones get deleted.
-    $KEEP = 5
-    Get-ChildItem $OutDir -Filter *.png -EA 0 | Remove-Item -Force -EA 0
-    foreach ($n in 1..8) {
-        $stub = Join-Path $OutDir ("shot-20200101-0000{0:d2}.png" -f $n)
-        [byte[]](0) | Set-Content -Path $stub -Encoding Byte
-        (Get-Item $stub).LastWriteTime = (Get-Date).AddMinutes(-100 + $n)
-    }
-    $keeper = Join-Path $OutDir "not-a-shot.txt"
-    Set-Content -Path $keeper -Value 'left alone' -Encoding utf8
-
-    Press-Chord (Get-Chord 'hotkey')
-    [void](Wait-Window $app.Id '*select a region*')
-    [void][W32.Input]::SetCursorPos(300, 300); Start-Sleep -Milliseconds 300
-    [W32.Input]::mouse_event($LEFTDOWN, 0, 0, 0, [IntPtr]::Zero); Start-Sleep -Milliseconds 250
-    [void][W32.Input]::SetCursorPos(600, 500); Start-Sleep -Milliseconds 350
-    [W32.Input]::mouse_event($LEFTUP, 0, 0, 0, [IntPtr]::Zero)
-    Start-Sleep -Seconds 3
-    [void][W32.Input]::SetCursorPos($cursor.X, $cursor.Y)
-
-    $left = @(Get-ChildItem $OutDir -Filter *.png -EA 0 | Sort-Object LastWriteTime -Descending)
-    Check ($left.Count -eq $KEEP) "8 stubs plus 1 capture leaves $($left.Count) png, want $KEEP"
-    Check ($left[0].Length -gt 1000) "the survivor at the top is the real capture ($($left[0].Length) bytes)"
-    Check (@($left | Where-Object Name -eq 'shot-20200101-000001.png').Count -eq 0) "the oldest stub is gone"
-    Check (Test-Path $keeper) "a non-shot file in the folder is left alone"
-    Remove-Item $keeper -Force -EA 0
+    # Retention is not checked here: seeding it meant emptying the real
+    # captures folder first. `cargo test prunes_screenshots_and_videos` covers
+    # it in a temp folder.
 
     Check ($null -ne (Get-Process -Id $app.Id -EA 0)) "app still running after the capture"
 } finally {

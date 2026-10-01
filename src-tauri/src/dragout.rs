@@ -16,7 +16,7 @@ use std::sync::Once;
 use windows::core::{implement, Error, Result, HRESULT, HSTRING, PCWSTR};
 use windows::Win32::Foundation::{
     BOOL, COLORREF, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS,
-    DV_E_FORMATETC, E_NOTIMPL, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, S_OK, SIZE,
+    DV_E_FORMATETC, E_NOTIMPL, HGLOBAL, OLE_E_ADVISENOTSUPPORTED, POINT, SIZE, S_OK,
 };
 use windows::Win32::Graphics::Gdi::CreateBitmap;
 use windows::Win32::System::Com::{
@@ -29,9 +29,9 @@ use windows::Win32::System::Ole::{
 };
 use windows::Win32::System::SystemServices::{MK_LBUTTON, MODIFIERKEYS_FLAGS};
 use windows::Win32::UI::Shell::{
-    Common::ITEMIDLIST, ILCreateFromPathW, IDragSourceHelper, IShellItemArray, BHID_DataObject,
-    CLSID_DragDropHelper, DROPFILES, SHDRAGIMAGE, SHCreateShellItemArrayFromIDLists,
-    SHCreateStdEnumFmtEtc,
+    BHID_DataObject, CLSID_DragDropHelper, Common::ITEMIDLIST, IDragSourceHelper,
+    ILCreateFromPathW, IShellItemArray, SHCreateShellItemArrayFromIDLists, SHCreateStdEnumFmtEtc,
+    DROPFILES, SHDRAGIMAGE,
 };
 
 /// Standard clipboard format ids, spelled out rather than imported: they move
@@ -287,7 +287,13 @@ pub fn start(path: &Path, thumb: Option<(u32, u32, Vec<u8>)>) -> Result<()> {
 
     if let Some((w, h, bgra)) = thumb {
         unsafe {
-            let bitmap = CreateBitmap(w as i32, h as i32, 1, 32, Some(bgra.as_ptr() as *const c_void));
+            let bitmap = CreateBitmap(
+                w as i32,
+                h as i32,
+                1,
+                32,
+                Some(bgra.as_ptr() as *const c_void),
+            );
             let image = SHDRAGIMAGE {
                 sizeDragImage: SIZE {
                     cx: w as i32,

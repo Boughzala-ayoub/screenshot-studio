@@ -130,7 +130,9 @@ async function captures() {
       }
       invoke("overlay_ready");
     } catch {
-      // this frame is lost, but the loop survives to answer the next press
+      // This frame is lost, but the loop survives to answer the next press,
+      // once the backend stops holding the capture for a page that never came.
+      invoke("cancel_capture");
     }
   }
 }

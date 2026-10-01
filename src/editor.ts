@@ -346,23 +346,47 @@ async function png(): Promise<Uint8Array> {
   return new Uint8Array(await blob.arrayBuffer());
 }
 
-// The bytes go as the raw request body, straight into the Rust side.
+// Which opening of the editor this page is. The save names it, so Rust
+// writes these pixels to the shot they came from or nowhere.
+let edit = 0;
+// One save at a time, and no Cancel under it: the export yields before the
+// bytes leave, and a second press there would race the first.
+let saving = false;
+
+// The bytes go as the raw request body, straight into the Rust side. Both
+// Save and Copy end on the clipboard, so each takes its place in line at the
+// press, before the export: an export can finish after a later press's, and
+// the clipboard must still end up with what was pressed last.
+async function send<T>(cmd: string, headers: Record<string, string> = {}) {
+  const ticket = invoke<number>("clipboard_ticket");
+  const bytes = await png();
+  return invoke<T>(cmd, bytes, { headers: { ...headers, ticket: String(await ticket) } });
+}
+
 async function save() {
+  if (saving) return;
+  saving = true;
   try {
-    await invoke("save_edited", await png());
+    await send("save_edited", { edit: String(edit) });
   } catch (err) {
     flash(String(err));
+  } finally {
+    saving = false;
   }
 }
 async function copy() {
   try {
-    await invoke("copy_edited", await png());
-    flash("copied to clipboard");
+    // False: a later Save or Copy took this one's place before it wrote, and
+    // that one says how it went. Saying "copied" here could paper over its
+    // failure with a clipboard that holds neither.
+    if (await send<boolean>("copy_edited")) flash("copied to clipboard");
   } catch (err) {
     flash(String(err));
   }
 }
-const cancel = () => invoke("close_editor");
+const cancel = () => {
+  if (!saving) invoke("close_editor");
+};
 
 document.getElementById("save")!.addEventListener("click", save);
 document.getElementById("copy")!.addEventListener("click", copy);
@@ -397,8 +421,10 @@ async function load() {
   setColor(color);
   setSize(size);
   buttons();
-  const path = await invoke<string | null>("edit_target");
-  if (!path) return;
+  const target = await invoke<[number, string] | null>("edit_target");
+  if (!target) return;
+  const [id, path] = target;
+  edit = id;
   const bytes = await invoke<ArrayBuffer>("shot_png", { path });
   const img = new Image();
   img.src = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));

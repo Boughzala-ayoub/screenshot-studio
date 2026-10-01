@@ -20,7 +20,11 @@ const closeBtn = document.getElementById("close") as HTMLButtonElement;
 // Newest first, so index 0 is the shot that was just taken and higher indices
 // walk back through the kept history.
 let shots: string[] = [];
+// The shot on screen. Every action works on this one, so it only moves once
+// the next picture is actually up; until then the arrows' target is `want`.
 let index = 0;
+let want = 0;
+let loads = 0; // bumped per show(), so a load that finishes after a newer one is dropped
 let url = ""; // the object URL on screen, revoked when the next one replaces it
 
 const current = () => shots[index];
@@ -44,31 +48,55 @@ function flashDims(msg: string) {
   }, 1400);
 }
 
-async function show() {
-  const video = isVideo(current());
+async function show(i: number) {
+  const load = ++loads;
+  const path = shots[i];
+  const video = isVideo(path);
   let w: number, h: number;
   if (video) {
     // Straight from disk over the asset protocol: a recording can be a few
-    // hundred megabytes, and <video> wants to seek in it.
-    clip.src = convertFileSrc(current());
-    await new Promise<void>((ok, bad) => {
-      clip.onloadedmetadata = () => ok();
-      clip.onerror = () => bad(new Error("video failed to load"));
+    // hundred megabytes, and <video> wants to seek in it. Probed off screen
+    // first, like a still: <video> drops its old clip the moment its src
+    // changes, so the pin's own element only switches to a clip that loads.
+    const src = convertFileSrc(path);
+    const probe = document.createElement("video");
+    probe.preload = "metadata";
+    const ok = await new Promise<boolean>((done) => {
+      probe.onloadedmetadata = () => done(true);
+      probe.onerror = () => done(false);
+      probe.src = src;
     });
-    ({ videoWidth: w, videoHeight: h } = clip);
+    ({ videoWidth: w, videoHeight: h } = probe);
+    probe.removeAttribute("src");
+    probe.load(); // lets go of the file
+    if (load !== loads) return;
+    if (!ok) throw new Error("video failed to load");
+    clip.src = src;
+    index = i;
     if (url) URL.revokeObjectURL(url);
     url = "";
     shot.removeAttribute("src");
   } else {
-    const bytes = await invoke<ArrayBuffer>("shot_png", { path: current() });
+    const bytes = await invoke<ArrayBuffer>("shot_png", { path });
+    const next = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
+    // Decoded off screen, so the old picture and its actions stay put until
+    // the new one can replace both at once.
+    const img = new Image();
+    img.src = next;
+    const painted = await img.decode().then(() => load === loads, () => false);
+    if (!painted) {
+      URL.revokeObjectURL(next);
+      if (load === loads) throw new Error("image failed to decode");
+      return;
+    }
     const old = url;
-    url = URL.createObjectURL(new Blob([bytes], { type: "image/png" }));
-    shot.src = url;
-    await shot.decode();
+    url = next;
+    shot.src = next;
+    index = i;
     // Revoked only after the replacement is painted, and never left behind:
     // each kept URL pins a decoded PNG in memory for the life of the pin.
     if (old) URL.revokeObjectURL(old);
-    ({ naturalWidth: w, naturalHeight: h } = shot);
+    ({ naturalWidth: w, naturalHeight: h } = img);
     clip.removeAttribute("src");
   }
   shot.hidden = video;
@@ -89,10 +117,19 @@ async function show() {
 }
 
 async function step(by: number) {
-  const next = index + by;
+  const next = want + by;
   if (next < 0 || next >= shots.length) return;
-  index = next;
-  await show();
+  want = next;
+  const shown = show(next);
+  const load = loads; // show() numbered itself before its first await
+  await shown.catch(() => {
+    // The shot stays where it was, so the arrows go back there and the same
+    // press retries. Only if this was the latest move: an older failure must
+    // not pull them back from a newer one that worked.
+    if (load !== loads) return;
+    want = index;
+    flashDims("could not load that shot");
+  });
 }
 
 // While a recording runs this same window is its stop bar: Rust sizes it,
@@ -140,15 +177,25 @@ if (recording) {
   document.body.classList.add("in");
   invoke("preview_ready");
 } else {
+  // A still's clipboard copy runs in the background and can take seconds, or
+  // fail, so the pin says Copied only once Rust says so. Rust also calls this
+  // when the copy finishes, in case that is after the pin loaded.
+  const autoCopied = async () => {
+    const path = current();
+    if (!url) return; // no still painted yet; the load asks for itself
+    const ok = await invoke<boolean | null>("auto_copied", { path });
+    if (ok !== null && path === current()) flashDims(ok ? "Copied" : "not copied, press C");
+  };
+  Object.assign(window, { autoCopied });
   // Hidden until the crop is on screen, so the pin never flashes an empty
-  // frame. The pin only ever loads right after a capture, and that capture is
-  // already on the clipboard, so say so once the picture is up.
+  // frame. The pin only ever loads right after a capture or an edit.
   invoke<string[]>("recent_shots")
     .then(async (list) => {
       shots = list;
       if (shots.length) {
-        await show();
-        flashDims(isVideo(current()) ? "Saved" : "Copied");
+        await show(0);
+        flashDims("Saved");
+        autoCopied();
       }
     })
     .finally(() => {
@@ -202,8 +249,9 @@ addEventListener("wheel", (e) => step(e.deltaY > 0 ? 1 : -1));
 
 function copyPath() {
   if (!current()) return;
-  invoke("copy_path", { path: current() })
-    .then(() => flashDims("path copied"))
+  // False means a newer copy took this one's place and reports for itself.
+  invoke<boolean>("copy_path", { path: current() })
+    .then((wrote) => wrote && flashDims("path copied"))
     .catch(() => flashDims("copy failed"));
 }
 
@@ -213,8 +261,8 @@ function copyPath() {
 function copyShot() {
   if (!current()) return;
   if (isVideo(current())) return copyPath();
-  invoke("copy_shot", { path: current() })
-    .then(() => flashDims("copied to clipboard"))
+  invoke<boolean>("copy_shot", { path: current() })
+    .then((wrote) => wrote && flashDims("copied to clipboard"))
     .catch(() => flashDims("copy failed"));
 }
 
