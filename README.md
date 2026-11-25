@@ -1,5 +1,7 @@
 # Screenshot Studio
 
+[![CI](https://github.com/Boughzala-ayoub/screenshot-studio/actions/workflows/ci.yml/badge.svg)](https://github.com/Boughzala-ayoub/screenshot-studio/actions/workflows/ci.yml)
+
 A native Windows region screenshot, markup, and H.264/MP4 screen-recording utility built with **Tauri v2 (Rust + WebView2)** and **TypeScript**. Press a global hotkey, freeze every monitor, drag a pixel-exact region with an 8× color loupe, annotate or redact inline, and drag the pinned preview straight into any app or terminal.
 
 <p align="center">
