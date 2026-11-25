@@ -1,3 +1,6 @@
 node_modules/
 dist/
 .ui-check/
+src-tauri/target/
+CODE_REVIEW*.md
+demo/
